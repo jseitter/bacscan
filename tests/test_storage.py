@@ -98,3 +98,47 @@ def test_migrates_v01_database(tmp_path):
         assert s.site == "old" and s.network == {} and s.hosts == [] and s.device(5).eth_mac is None
         st.save(sample_scan())
         assert len(st.list()) == 2
+
+
+def test_diff():
+    import copy
+
+    from bacscan.storage.diff import diff_lines, diff_scans
+
+    a = sample_scan()
+    b = copy.deepcopy(a)
+    b.devices[0].props["firmware-revision"] = PropValue("2.0", "2.0")
+    b.devices[0].objects[0].props["units"] = PropValue("degrees-fahrenheit", "degrees-fahrenheit")
+    b.devices[0].objects[0].props["present-value"] = PropValue(70.0, "70")
+    b.devices[0].objects.append(BacnetObject("binary-input", 1, {"object-name": PropValue("Alarm", "Alarm")}))
+    b.devices.pop(1)
+    b.devices.append(Device(instance=9, address="10.0.0.9", props={"object-name": PropValue("New", "New")}))
+    b.network["internet"]["status"] = "none"
+    b.hosts[0].ip = "10.0.0.254"
+    b.hosts.append(Host("10.0.0.50", "00:11:22:33:44:55", "X"))
+
+    d = diff_scans(a, b)
+    assert d.devices_added == [(9, "New")] and d.devices_removed == [(8, "")]
+    [dd] = d.devices_changed
+    assert {c.what for c in dd.changes} == {"firmware", "object count"}
+    assert dd.objects_added == ["binary-input,1"]
+    assert [c.what for c in dd.object_changes] == ["analog-input,1 units"]  # values ignored by default
+    assert [c.what for c in d.network_changes] == ["internet"]
+    assert d.hosts_added == ["10.0.0.50 00:11:22:33:44:55 X"] and d.hosts_changed[0].new == "10.0.0.254"
+    assert any(c.what == "analog-input,1 present-value" for c in diff_scans(a, b, values=True).devices_changed[0].object_changes)
+    assert ("+", "device 9 New") in diff_lines(d)
+    assert diff_lines(diff_scans(a, copy.deepcopy(a))) == [("#", "no differences")]
+
+
+def test_xlsx_export(tmp_path):
+    from openpyxl import load_workbook
+
+    from bacscan.storage.xlsx import export_xlsx
+
+    scan = sample_scan()
+    scan.network["switch"] = {"found": True, "protocol": "LLDP", "system_name": "sw1", "port_id": "Gi1/0/1"}
+    export_xlsx(scan, tmp_path / "s.xlsx")
+    wb = load_workbook(tmp_path / "s.xlsx")
+    assert wb.sheetnames[:6] == ["Summary", "Devices", "Objects", "Network", "Hosts", "7 AHU-1"]
+    assert wb["Devices"]["B2"].value == "AHU-1" and wb["Objects"]["G2"].value == "21.25"
+    assert any(r[0].value == "Switch" and "sw1" in r[1].value for r in wb["Network"].iter_rows(min_row=2))

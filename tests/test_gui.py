@@ -102,10 +102,21 @@ def test_gui_scan(qapp, tmp_path, port_pair):
         assert wait_until(lambda: win.rescan_worker is None), "re-scan did not finish"
         assert win.scan.id == sid and len(win.scan.devices[0].objects) == 9
 
+        # passive listen produces a second saved scan; compare dialog works on the two
+        cfg2 = ScanConfig(bind_address=f"127.0.0.1/32:{scan_port}", network_info=False)
+        win.start_scan(cfg2, listen_seconds=1)
+        assert wait_until(lambda: win.worker is None), "listen did not finish"
+        assert win.scan.level == "listen" and win.history.count() == 2
+        from bacscan.gui.app import CompareDialog
+        dlg = CompareDialog(win.store, win.scan.id)
+        assert dlg.tree.topLevelItemCount() > 0 and "removed" in dlg.summary.text()
+        from bacscan.storage.xlsx import export_xlsx
+        export_xlsx(win.store.load(sid), tmp_path / "gui.xlsx")
+
         # reload from history
         win.show_scan(None)
         win.history.setCurrentRow(-1)
-        win.history.setCurrentRow(0)
+        win.history.setCurrentRow(1)  # newest first: row 0 is the listen result
         assert win.scan.id == sid and win.device_model.rowCount() == 1
     finally:
         win.close()

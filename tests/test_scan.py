@@ -152,3 +152,42 @@ def test_scan_with_network_survey(port_pair):
     assert "internet" not in scan.network
     me = next(h for h in scan.hosts if h.ip == "127.0.0.1")
     assert me.note == "this Mac" and me.bacnet_instance == 1001
+
+
+def test_listen_records_without_replying(port_pair):
+    """The listener hears a Who-Is and an I-Am but never answers the Who-Is."""
+    from bacpypes3.apdu import IAmRequest, WhoIsRequest
+    from bacpypes3.pdu import Address
+
+    from bacscan.core.listener import Listener
+
+    listen_port, sender_port = port_pair
+
+    async def main():
+        cfg = ScanConfig(bind_address=f"127.0.0.1/32:{listen_port}", network_info=False)
+        listener = Listener(cfg, duration=1.5)
+        task = asyncio.ensure_future(listener.run())
+        await asyncio.sleep(0.6)
+        sender = build_app(f"127.0.0.1/32:{sender_port}", 3003)
+        got = []
+        orig = sender.do_IAmRequest
+
+        async def capture(apdu):
+            got.append(apdu)
+            await orig(apdu)
+        sender.do_IAmRequest = capture
+        dest = Address(f"127.0.0.1:{listen_port}")
+        await sender.request(WhoIsRequest(destination=dest))
+        dev = sender.device_object
+        await sender.request(IAmRequest(iAmDeviceIdentifier=dev.objectIdentifier, maxAPDULengthAccepted=1024,
+                                        segmentationSupported="segmented-both", vendorID=999, destination=dest))
+        scan = await task
+        sender.close()
+        return scan, got
+
+    scan, replies = asyncio.run(main())
+    assert replies == []  # the listener stayed silent
+    services = {e["service"]: e for e in scan.network["bacnet_traffic"]}
+    assert services["who-is"]["detail"] == "all devices"
+    assert services["i-am"]["count"] == 1
+    assert [d.instance for d in scan.devices] == [3003] and scan.level == "listen"

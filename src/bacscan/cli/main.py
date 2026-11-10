@@ -7,18 +7,22 @@ import json
 import logging
 import signal
 import sys
+from pathlib import Path
 
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from .. import __version__
-from ..core import netinfo
+from ..core import lldp, netinfo
+from ..core.listener import Listener
 from ..core import network as netmod
 from ..core.models import Scan
 from ..core.scanner import LEVELS, ScanConfig, ScanError, ScanEvent, Scanner, read_single
 from ..storage.db import Store
+from ..storage.diff import diff_lines, diff_scans
 from ..storage.export import export_csv, export_hosts_csv, export_json, import_json
+from ..storage.xlsx import export_xlsx
 
 console = Console()
 err = Console(stderr=True)
@@ -61,6 +65,9 @@ def _config_from_args(a: argparse.Namespace) -> ScanConfig:
         cfg.internet_checks = False
     cfg.public_ip = getattr(a, "public_ip", False)
     cfg.sweep = getattr(a, "sweep", False)
+    cfg.switch_info = getattr(a, "lldp", False)
+    if getattr(a, "lldp_wait", None):
+        cfg.switch_wait = a.lldp_wait
     return cfg
 
 
@@ -191,7 +198,8 @@ def cmd_scan(a: argparse.Namespace) -> int:
     if not a.no_save:
         console.print(f"saved as scan [bold]{scan.id}[/bold] in {store.path}")
     if a.output:
-        (export_csv if a.output.endswith(".csv") else export_json)(scan, a.output)
+        ext = Path(a.output).suffix.lower()
+        {".csv": export_csv, ".xlsx": export_xlsx}.get(ext, export_json)(scan, a.output)
         console.print(f"exported to {a.output}")
     if scan.status == "failed":
         return 1
@@ -216,12 +224,81 @@ def cmd_netinfo(a: argparse.Namespace) -> int:
             except ValueError as e:
                 err.print(f"[yellow]sweep skipped:[/yellow] {e}")
         hosts = netinfo.collect_hosts(iface, gateway=info.get("gateway", {}).get("ip"), swept=swept)
+        if a.lldp:
+            console.log(f"waiting up to {a.lldp_wait:.0f} s for LLDP/CDP from the switch…")
+            info["switch"] = lldp.capture(iface.name, a.lldp_wait)
     if a.json:
         print(json.dumps({"network": info, "hosts": [h.__dict__ for h in hosts]}, indent=2, ensure_ascii=False))
         return 0
     console.print(_network_table(info))
     console.print(_hosts_table(hosts))
     return 0
+
+
+def cmd_listen(a: argparse.Namespace) -> int:
+    """Passive mode: record BACnet broadcasts, send nothing."""
+    cfg = _config_from_args(a)
+    cfg.network_info = not a.no_network_info
+    listener = Listener(cfg, a.duration)
+
+    def on_event(e: ScanEvent) -> None:
+        if e.kind == "device_found":
+            console.print(f"[green]+[/green] {e.message}")
+        elif e.kind == "log":
+            console.print(f"[dim]{e.message}[/dim]")
+        elif e.kind == "finished":
+            console.print(e.message)
+
+    listener.on_event = on_event
+
+    async def run() -> Scan:
+        loop = asyncio.get_running_loop()
+        try:
+            loop.add_signal_handler(signal.SIGINT, listener.cancel)
+        except NotImplementedError:
+            pass
+        return await listener.run()
+
+    try:
+        scan = asyncio.run(run())
+    except (ScanError, ValueError) as e:
+        err.print(f"[red]error:[/red] {e}")
+        return 1
+    traffic = scan.network.get("bacnet_traffic", [])
+    if traffic:
+        t = Table(title="BACnet traffic heard", header_style="bold")
+        for c in ("Source", "Service", "Count", "Detail"):
+            t.add_column(c, overflow="fold")
+        for e in traffic:
+            t.add_row(e["source"], e["service"], str(e["count"]), e["detail"])
+        console.print(t)
+    if not a.no_save:
+        with _open_store(a) as store:
+            store.save(scan)
+        console.print(f"saved as scan [bold]{scan.id}[/bold]")
+    return 0 if traffic else 2
+
+
+def cmd_scans_diff(a: argparse.Namespace) -> int:
+    with _open_store(a) as store:
+        try:
+            sa, sb = _load(a, store, a.scan_a), _load(a, store, a.scan_b)
+        except KeyError as e:
+            err.print(f"[red]{e.args[0]}[/red]")
+            return 1
+    d = diff_scans(sa, sb, values=a.values)
+    if a.json:
+        print(json.dumps(d.to_dict(), indent=2, ensure_ascii=False))
+        return 0
+    console.print(f"[bold]scan {sa.id}[/bold] ({sa.started_at[:16]}, {sa.site or 'no site'}) → "
+                  f"[bold]scan {sb.id}[/bold] ({sb.started_at[:16]}, {sb.site or 'no site'})")
+    colors = {"+": "green", "-": "red", "~": "yellow"}
+    for kind, text in diff_lines(d):
+        if kind == "#":
+            console.print(f"\n[bold]{text}[/bold]")
+        else:
+            console.print(f"  [{colors[kind]}]{kind} {text}[/{colors[kind]}]", highlight=False)
+    return 0 if d.empty else 3
 
 
 def cmd_read(a: argparse.Namespace) -> int:
@@ -325,8 +402,11 @@ def cmd_scans_show(a: argparse.Namespace) -> int:
 def cmd_scans_export(a: argparse.Namespace) -> int:
     with _open_store(a) as store:
         scan = _load(a, store, a.scan_id)
-    fmt = a.format or ("csv" if a.output.endswith(".csv") else "json")
-    if fmt == "hosts":
+    fmt = a.format or {".csv": "csv", ".xlsx": "xlsx"}.get(Path(a.output).suffix.lower(), "json")
+    if fmt == "xlsx":
+        export_xlsx(scan, a.output)
+        console.print(f"wrote {a.output}")
+    elif fmt == "hosts":
         n = export_hosts_csv(scan, a.output)
         console.print(f"wrote {n} hosts to {a.output}")
     elif fmt == "csv":
@@ -393,6 +473,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--public-ip", action="store_true", help="look up the public IP (contacts api.ipify.org)")
         sp.add_argument("--sweep", action="store_true",
                         help="probe every address of the local subnet (max /22) to find all hosts")
+        sp.add_argument("--lldp", action="store_true",
+                        help="wait for an LLDP/CDP announcement to identify switch, port and VLAN")
+        sp.add_argument("--lldp-wait", type=float, default=lldp.DEFAULT_WAIT,
+                        help=f"seconds to wait for LLDP/CDP (default {lldp.DEFAULT_WAIT:.0f})")
 
     sp = sub.add_parser("interfaces", help="list network interfaces")
     sp.add_argument("--all", action="store_true", help="include virtual/VPN interfaces")
@@ -422,6 +506,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_netinfo)
 
+    sp = sub.add_parser("listen", help="passive mode: record BACnet broadcasts without sending anything")
+    net_opts(sp)
+    sp.add_argument("-d", "--duration", type=float, default=60, help="seconds to listen (default 60)")
+    sp.add_argument("--site", help="site name stored with the result")
+    sp.add_argument("--notes", help="notes stored with the result")
+    sp.add_argument("--no-network-info", action="store_true", help="do not record interface/ARP information")
+    sp.add_argument("--no-save", action="store_true")
+    sp.set_defaults(func=cmd_listen)
+
     sp = sub.add_parser("read", help="read a single property (read-only)")
     net_opts(sp)
     sp.add_argument("address", help="device address, e.g. 10.0.0.5 or 2001:5")
@@ -440,11 +533,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-n", "--network", action="store_true", help="show network environment and hosts")
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_scans_show)
-    sp = sc.add_parser("export", help="export a scan: json (everything), csv (objects), hosts (hosts CSV)")
+    sp = sc.add_parser("export", help="export a scan: json (everything), csv (objects), xlsx (Excel), hosts (CSV)")
     sp.add_argument("scan_id")
     sp.add_argument("-o", "--output", required=True)
-    sp.add_argument("-f", "--format", choices=("json", "csv", "hosts"))
+    sp.add_argument("-f", "--format", choices=("json", "csv", "xlsx", "hosts"))
     sp.set_defaults(func=cmd_scans_export)
+    sp = sc.add_parser("diff", help="compare two scans (older first; 'latest' allowed)")
+    sp.add_argument("scan_a")
+    sp.add_argument("scan_b")
+    sp.add_argument("--values", action="store_true", help="also compare present values / status")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_scans_diff)
     sp = sc.add_parser("import", help="import a JSON export")
     sp.add_argument("file")
     sp.set_defaults(func=cmd_scans_import)

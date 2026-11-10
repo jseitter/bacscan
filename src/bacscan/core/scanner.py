@@ -20,7 +20,7 @@ from bacpypes3.pdu import Address
 from bacpypes3.primitivedata import ObjectIdentifier
 
 from .. import __version__
-from . import netinfo
+from . import lldp, netinfo
 from . import network as netmod
 from .models import BacnetObject, Device, PropValue, Router, Scan, now_iso
 from .values import error_text, is_unknown_property, to_json, to_text
@@ -131,6 +131,8 @@ class ScanConfig:
     internet_checks: bool = True  # DNS/HTTP/HTTPS internet reachability tests
     public_ip: bool = False  # opt-in: ask an external service for the public IP
     sweep: bool = False  # opt-in: probe every address of the local subnet to fill the ARP table
+    switch_info: bool = False  # opt-in: wait for an LLDP/CDP frame (passive, needs capture rights)
+    switch_wait: float = lldp.DEFAULT_WAIT
     notes: str = ""
     bind_address: str | None = None  # expert/test override, e.g. "127.0.0.1/32:47810"
 
@@ -177,7 +179,8 @@ class ScanApplication(Application):
             self.iam_callback(apdu)
 
 
-def build_application(cfg: ScanConfig) -> tuple[ScanApplication, str, str]:
+def build_application(cfg: ScanConfig, app_class: type[ScanApplication] | None = None
+                      ) -> tuple[ScanApplication, str, str]:
     """Create the BACnet stack. Returns (app, interface label, bind address)."""
     if cfg.bind_address:
         bind = cfg.bind_address
@@ -207,7 +210,7 @@ def build_application(cfg: ScanConfig) -> tuple[ScanApplication, str, str]:
     )
     if cfg.bbmd and ":" not in cfg.bbmd:
         args.foreign = f"{cfg.bbmd}:{netmod.BACNET_PORT}"
-    app = ScanApplication.from_args(args)
+    app = (app_class or ScanApplication).from_args(args)
     if cfg.port != netmod.BACNET_PORT:
         # bacpypes3 broadcasts to its own port; devices listen on 47808, so redirect
         # Who-Is broadcasts there when we had to use a different local port.
@@ -435,9 +438,13 @@ class Scanner:
         self._own_instance = app.device_object.objectIdentifier[1]
         app.iam_callback = self._on_iam
         self._emit("log", f"BACnet stack on {bind} as device {self._own_instance}")
-        iface = self._interface(bind) if self.cfg.network_info else None
-        env_task = None
-        if iface is not None:
+        iface = self._interface(bind) if (self.cfg.network_info or self.cfg.switch_info) else None
+        env_task = switch_task = None
+        if iface is not None and self.cfg.switch_info:
+            self._emit("log", f"listening for LLDP/CDP on {iface.name} (up to {self.cfg.switch_wait:.0f} s)")
+            switch_task = asyncio.ensure_future(asyncio.to_thread(
+                lldp.capture, iface.name, self.cfg.switch_wait, lambda: self._cancelled))
+        if iface is not None and self.cfg.network_info:
             self._emit("log", f"collecting network environment of {iface.name}")
             env_task = asyncio.ensure_future(asyncio.to_thread(
                 netinfo.survey_environment, iface, self.cfg.internet_checks, self.cfg.public_ip))
@@ -458,8 +465,15 @@ class Scanner:
             log.debug("scan failed", exc_info=True)
         finally:
             app.close()
-        if iface is not None:
+        if iface is not None and self.cfg.network_info:
             await self._network_survey(iface, env_task)
+        if switch_task is not None:
+            self._emit("log", "waiting for LLDP/CDP announcement from the switch…")
+            sw = await switch_task
+            self.scan.network["switch"] = sw
+            rows = dict(lldp.summarize(sw))
+            self._emit("network", "switch: " + " · ".join(
+                v for k, v in rows.items() if k in ("Switch", "Switch port", "Switch VLAN")))
         self.scan.finished_at = now_iso()
         n = len(self.scan.devices)
         self._emit("finished", f"{self.scan.status}: {n} device(s), {self.scan.object_count} object(s) "

@@ -189,6 +189,19 @@ class HostModel(_ListModel):
         return None
 
 
+class TrafficModel(_ListModel):
+    """Rows of scan.network['bacnet_traffic'] (listen mode)."""
+
+    columns = [
+        ("Source", lambda e: e["source"]),
+        ("Service", lambda e: e["service"]),
+        ("Count", lambda e: e["count"]),
+        ("Detail", lambda e: e["detail"]),
+        ("First", lambda e: e["first"][11:19]),
+        ("Last", lambda e: e["last"][11:19]),
+    ]
+
+
 def _ip_sort(ip: str) -> int:
     try:
         a, b, c, d = (int(x) for x in ip.split("."))

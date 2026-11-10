@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QAction, QGuiApplication, QKeySequence
+from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
+    QInputDialog,
     QFormLayout,
     QGridLayout,
     QHBoxLayout,
@@ -36,6 +37,8 @@ from PySide6.QtWidgets import (
     QTableView,
     QTabWidget,
     QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -46,8 +49,10 @@ from ..core import network as netmod
 from ..core.models import Device, Scan
 from ..core.scanner import LEVELS, ScanConfig, ScanEvent
 from ..storage.db import Store
+from ..storage.diff import diff_lines, diff_scans
 from ..storage.export import export_csv, export_hosts_csv, export_json, import_json
-from .models import DeviceModel, FilterProxy, HostModel, ObjectModel, PropertyModel
+from ..storage.xlsx import export_xlsx
+from .models import DeviceModel, FilterProxy, HostModel, ObjectModel, PropertyModel, TrafficModel
 from .worker import ScanWorker
 
 log = logging.getLogger("bacscan.gui")
@@ -117,6 +122,71 @@ class ScanInfoDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+
+
+class CompareDialog(QDialog):
+    """Pick two saved scans and show what changed."""
+
+    COLORS = {"+": "#2e7d32", "-": "#c62828", "~": "#ef6c00"}
+
+    def __init__(self, store: Store, current_id: int | None, parent=None):
+        super().__init__(parent)
+        self.store = store
+        self.setWindowTitle("Compare scans")
+        self.resize(900, 620)
+        v = QVBoxLayout(self)
+        row = QHBoxLayout()
+        self.a_combo, self.b_combo = QComboBox(), QComboBox()
+        scans = store.list()
+        for s in scans:
+            label = f"{s.id}: {s.started_at.replace('T', ' ')[:16]} · {s.site or '(no site)'} · {s.devices} dev"
+            self.a_combo.addItem(label, s.id)
+            self.b_combo.addItem(label, s.id)
+        ids = [s.id for s in scans]
+        b = ids.index(current_id) if current_id in ids else 0
+        self.b_combo.setCurrentIndex(b)
+        self.a_combo.setCurrentIndex(min(b + 1, len(ids) - 1) if ids else 0)  # list is newest first
+        self.values_cb = QCheckBox("Include present values")
+        go = QPushButton("Compare")
+        go.clicked.connect(self.compare)
+        row.addWidget(QLabel("Older"))
+        row.addWidget(self.a_combo, 1)
+        row.addWidget(QLabel("Newer"))
+        row.addWidget(self.b_combo, 1)
+        row.addWidget(self.values_cb)
+        row.addWidget(go)
+        v.addLayout(row)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        v.addWidget(self.tree, 1)
+        self.summary = QLabel()
+        v.addWidget(self.summary)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        v.addWidget(buttons)
+        if len(ids) >= 2:
+            self.compare()
+
+    def compare(self) -> None:
+        a, b = self.a_combo.currentData(), self.b_combo.currentData()
+        if a is None or b is None:
+            return
+        d = diff_scans(self.store.load(a), self.store.load(b), values=self.values_cb.isChecked())
+        self.tree.clear()
+        parent = None
+        counts = {"+": 0, "-": 0, "~": 0}
+        for kind, text in diff_lines(d):
+            if kind == "#":
+                parent = QTreeWidgetItem(self.tree, [text])
+                font = parent.font(0)
+                font.setBold(True)
+                parent.setFont(0, font)
+                continue
+            counts[kind] += 1
+            item = QTreeWidgetItem(parent or self.tree, [f"{kind} {text}"])
+            item.setForeground(0, QBrush(QColor(self.COLORS[kind])))
+        self.tree.expandAll()
+        self.summary.setText(f"{counts['+']} added · {counts['-']} removed · {counts['~']} changed")
 
 
 # ---------------------------------------------------------------- main window
@@ -194,6 +264,9 @@ class MainWindow(QMainWindow):
         self.scan_btn.clicked.connect(self.start_scan_from_ui)
         self.stop_btn = QPushButton("■  Stop")
         self.stop_btn.clicked.connect(self.stop_scan)
+        self.listen_btn = QPushButton("Listen…")
+        self.listen_btn.setToolTip("Passive mode: record BACnet broadcasts without sending anything")
+        self.listen_btn.clicked.connect(self.start_listen_from_ui)
 
         g.addWidget(QLabel("Interface"), 0, 0)
         row = QHBoxLayout()
@@ -236,13 +309,17 @@ class MainWindow(QMainWindow):
                               "Probe every address of the local subnet (max /22) to find all hosts")
         self.public_ip_cb = check("Public IP", "public_ip", False,
                                   "Look up the public IP address (contacts api.ipify.org)")
+        self.switch_cb = check("Switch port (LLDP/CDP)", "switch_info", False,
+                               "Wait up to 35 s for the switch to announce itself (name, port, VLAN). "
+                               "Needs packet capture rights.")
         self.netinfo_cb.toggled.connect(lambda on: [w.setEnabled(on) for w in
                                                      (self.internet_cb, self.sweep_cb, self.public_ip_cb)])
         checks = QHBoxLayout()
-        for cb in (self.netinfo_cb, self.internet_cb, self.sweep_cb, self.public_ip_cb):
+        for cb in (self.netinfo_cb, self.internet_cb, self.sweep_cb, self.public_ip_cb, self.switch_cb):
             checks.addWidget(cb)
         checks.addStretch(1)
         g.addLayout(checks, 2, 1, 1, 7)
+        g.addWidget(self.listen_btn, 2, 8)
         g.setColumnStretch(1, 2)
         g.setColumnStretch(3, 2)
         g.setColumnStretch(5, 1)
@@ -356,6 +433,19 @@ class MainWindow(QMainWindow):
         hh.addWidget(self.host_filter, 2)
         hv.addLayout(hh)
         hv.addWidget(self.host_view)
+        self.traffic_model = TrafficModel(self)
+        self.traffic_proxy = FilterProxy(self)
+        self.traffic_proxy.setSourceModel(self.traffic_model)
+        self.traffic_view = _table(self.traffic_proxy, stretch_col=-1)
+        self.traffic_view.customContextMenuRequested.connect(
+            lambda pos: self._copy_menu(self.traffic_view, pos))
+        self.traffic_box = QWidget()
+        tv = QVBoxLayout(self.traffic_box)
+        tv.setContentsMargins(0, 6, 0, 0)
+        tv.addWidget(QLabel("<b>BACnet traffic heard</b> (listen mode)"))
+        tv.addWidget(self.traffic_view)
+        hv.addWidget(self.traffic_box)
+        self.traffic_box.hide()
         net_split = QSplitter(Qt.Orientation.Horizontal)
         net_split.addWidget(env_box)
         net_split.addWidget(host_box)
@@ -395,6 +485,9 @@ class MainWindow(QMainWindow):
         self.export_json_act = self._action(f, "Export scan as JSON…", lambda: self.export_scan("json"), "Ctrl+E")
         self.export_csv_act = self._action(f, "Export scan as CSV…", lambda: self.export_scan("csv"))
         self.export_hosts_act = self._action(f, "Export hosts as CSV…", lambda: self.export_scan("hosts"))
+        self.export_xlsx_act = self._action(f, "Export scan as Excel…", lambda: self.export_scan("xlsx"))
+        f.addSeparator()
+        self.compare_act = self._action(f, "Compare scans…", self.compare_scans, "Ctrl+D")
         f.addSeparator()
         self.edit_info_act = self._action(f, "Edit site / notes…", self.edit_scan_info)
         self.delete_act = self._action(f, "Delete scan", self.delete_scan)
@@ -403,6 +496,7 @@ class MainWindow(QMainWindow):
 
         s = m.addMenu("&Scan")
         self.start_act = self._action(s, "Start scan", self.start_scan_from_ui, "Ctrl+R")
+        self.listen_act = self._action(s, "Listen (passive)…", self.start_listen_from_ui)
         self.stop_act = self._action(s, "Stop scan", self.stop_scan, "Ctrl+.")
         s.addSeparator()
         self._action(s, "Settings…", self.open_settings, QKeySequence.StandardKey.Preferences)
@@ -475,6 +569,8 @@ class MainWindow(QMainWindow):
         menu.addAction("Export as JSON…", lambda: self.export_scan("json"))
         menu.addAction("Export as CSV…", lambda: self.export_scan("csv"))
         menu.addAction("Export hosts as CSV…", lambda: self.export_scan("hosts"))
+        menu.addAction("Export as Excel…", lambda: self.export_scan("xlsx"))
+        menu.addAction("Compare with…", self.compare_scans)
         menu.addSeparator()
         menu.addAction("Delete", self.delete_scan)
         menu.exec(self.history.mapToGlobal(pos))
@@ -496,6 +592,11 @@ class MainWindow(QMainWindow):
         s = self.scan
         self.env_model.set_items(netinfo.summarize(s.network) if s and s.network else [])
         self.host_model.set_items(s.hosts if s else [])
+        traffic = s.network.get("bacnet_traffic", []) if s and s.network else []
+        self.traffic_model.set_items(traffic)
+        self.traffic_box.setVisible(bool(traffic))
+        if traffic:
+            self._fit_columns(self.traffic_view)
         self.env_view.resizeColumnToContents(0)
         self._fit_columns(self.host_view)
         n = len(s.hosts) if s else 0
@@ -529,8 +630,8 @@ class MainWindow(QMainWindow):
                 f"<b>Devices</b> ({len(s.devices)}) — {label} · {s.site or 'no site'} · "
                 f"{s.started_at.replace('T', ' ')[:19]} · {s.level} · {s.status}{routers}")
         has = s is not None and s.id is not None
-        for act in (self.export_json_act, self.export_csv_act, self.export_hosts_act, self.edit_info_act,
-                    self.delete_act):
+        for act in (self.export_json_act, self.export_csv_act, self.export_hosts_act, self.export_xlsx_act,
+                    self.edit_info_act, self.delete_act):
             act.setEnabled(has and self.worker is None)
 
     def selected_device(self) -> Device | None:
@@ -611,6 +712,7 @@ class MainWindow(QMainWindow):
             internet_checks=self.internet_cb.isChecked(),
             sweep=self.sweep_cb.isChecked(),
             public_ip=self.public_ip_cb.isChecked(),
+            switch_info=self.switch_cb.isChecked(),
         )
         rng = self.range_edit.text().strip()
         if rng:
@@ -633,17 +735,36 @@ class MainWindow(QMainWindow):
             self.settings.setValue(key, val)
         self.start_scan(cfg)
 
-    def start_scan(self, cfg: ScanConfig) -> None:
-        """Start a scan with an explicit configuration (also used by tests)."""
-        self.worker = ScanWorker(cfg, self)
+    def start_listen_from_ui(self) -> None:
+        if self.worker is not None:
+            return
+        seconds, ok = QInputDialog.getInt(self, "Listen (passive)",
+                                          "Record BACnet broadcasts for how many seconds?\n"
+                                          "Nothing is sent to the network.",
+                                          int(self.settings.value("listen_seconds", 60)), 5, 3600, 5)
+        if not ok:
+            return
+        self.settings.setValue("listen_seconds", seconds)
+        try:
+            cfg = self.config_from_ui()
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid input", str(e))
+            return
+        self.start_scan(cfg, listen_seconds=seconds)
+
+    def start_scan(self, cfg: ScanConfig, listen_seconds: float | None = None) -> None:
+        """Start a scan (or a passive listen) with an explicit configuration (also used by tests)."""
+        self.worker = ScanWorker(cfg, self, listen_seconds=listen_seconds)
         self.worker.event.connect(self._on_event)
         self.worker.finished_scan.connect(self._on_finished)
         self.worker.failed.connect(self._on_failed)
         self.history.clearSelection()
         self.show_scan(self.worker.scan)
-        self.log_view.appendPlainText(f"--- scan started ({cfg.level}) ---")
+        mode = f"listen {listen_seconds:.0f} s" if listen_seconds is not None else cfg.level
+        self.log_view.appendPlainText(f"--- {'listen' if listen_seconds is not None else 'scan'} started ({mode}) ---")
         self._set_busy(True)
-        self.status_label.setText("Discovering devices…")
+        self.status_label.setText("Listening (nothing is sent)…" if listen_seconds is not None
+                                  else "Discovering devices…")
         self.worker.start()
 
     def stop_scan(self) -> None:
@@ -709,7 +830,13 @@ class MainWindow(QMainWindow):
         n = len(scan.devices)
         self.status_label.setText(
             f"Scan {scan.status}: {n} device(s), {scan.object_count} object(s) — saved as scan {scan.id}")
-        if n == 0 and scan.status == "completed":
+        if scan.level == "listen":
+            heard = len(scan.network.get("bacnet_traffic", []))
+            self.status_label.setText(f"Listen {scan.status}: {heard} traffic source/service pair(s), "
+                                      f"{n} device(s) — saved as scan {scan.id}")
+            if heard:
+                self.tabs.setCurrentIndex(1)
+        elif n == 0 and scan.status == "completed":
             QMessageBox.information(
                 self, "No devices found",
                 "No BACnet device answered.\n\nCheck: correct interface and cable, macOS firewall "
@@ -765,7 +892,7 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _set_busy(self, busy: bool, allow_stop: bool = True) -> None:
-        for w in (self.scan_btn, self.start_act, self.iface_combo, self.port_spin, self.level_combo,
+        for w in (self.scan_btn, self.start_act, self.listen_btn, self.listen_act, self.iface_combo, self.port_spin, self.level_combo,
                   self.wait_spin, self.site_edit, self.targets_edit, self.bbmd_edit, self.range_edit,
                   self.history, self.netinfo_cb):
             w.setEnabled(not busy)
@@ -793,7 +920,10 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self.settings.setValue("export_dir", str(Path(path).parent))
-        if fmt == "hosts":
+        if fmt == "xlsx":
+            export_xlsx(self.scan, path)
+            self.status_label.setText(f"Exported to {path}")
+        elif fmt == "hosts":
             n = export_hosts_csv(self.scan, path)
             self.status_label.setText(f"Exported {n} hosts to {path}")
         elif fmt == "csv":
@@ -838,6 +968,12 @@ class MainWindow(QMainWindow):
         self.store.delete(sid)
         self.show_scan(None)
         self.reload_history()
+
+    def compare_scans(self) -> None:
+        if len(self.store.list()) < 2:
+            QMessageBox.information(self, "Compare scans", "At least two saved scans are needed.")
+            return
+        CompareDialog(self.store, self._selected_scan_id(), self).exec()
 
     def open_settings(self) -> None:
         SettingsDialog(self.settings, self).exec()

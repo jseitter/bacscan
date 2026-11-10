@@ -17,10 +17,14 @@ class ScanWorker(QThread):
     finished_scan = Signal(object)  # Scan
     failed = Signal(str)
 
-    def __init__(self, cfg: ScanConfig, parent=None):
+    def __init__(self, cfg: ScanConfig, parent=None, listen_seconds: float | None = None):
         super().__init__(parent)
         self.cfg = cfg
-        self.scanner = Scanner(cfg, self.event.emit)
+        if listen_seconds is not None:
+            from ..core.listener import Listener
+            self.scanner = Listener(cfg, listen_seconds, self.event.emit)
+        else:
+            self.scanner = Scanner(cfg, self.event.emit)
 
     @property
     def scan(self):

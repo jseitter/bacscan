@@ -42,8 +42,28 @@ uv run bacscan scans show latest --network
 uv run bacscan scans export latest -f hosts -o hosts.csv
 ```
 
+Switch port (which switch, port and VLAN you are plugged into) is read from LLDP/CDP
+announcements, passively: `--lldp` (GUI: *Switch port* checkbox) waits up to 35 s. This needs
+packet-capture rights: run with `sudo`, or install Wireshark (its *ChmodBPF* lets your user capture).
+
 MAC vendors come from a bundled offline list (`src/bacscan/data/oui.tsv.gz`, from Wireshark's
 `manuf`); refresh it with `uv run python scripts/update_oui.py`.
+
+## Listen mode, comparing scans, Excel
+
+```sh
+uv run bacscan listen -d 120 --site "Building A"   # passive: record BACnet broadcasts, send nothing
+uv run bacscan scans diff 12 latest                 # what changed between two visits
+uv run bacscan scans diff 12 latest --values        # ... including present values
+uv run bacscan scans export latest -o building-a.xlsx
+```
+
+Listen mode never answers anything (not even Who-Is), so it is safe on sensitive networks. On a
+switched network it only hears broadcasts: who is searching (BMS head-ends send Who-Is), I-Am
+answers, time synchronisation, unconfirmed COV/event notifications.
+
+The Excel file has a summary, a devices sheet, all objects, network, hosts, and one sheet per
+device. In the GUI: *File → Compare scans…*, *File → Export scan as Excel…*, and **Listen…**.
 
 ## Command line
 
