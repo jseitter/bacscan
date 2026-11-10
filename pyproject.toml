@@ -11,7 +11,7 @@ dependencies = [
     "bacpypes3>=0.0.110",
     "openpyxl>=3.1.5",
     "psutil>=7.2.2",
-    "pyside6>=6.12.0",
+    "pyside6-essentials>=6.12.0",
     "rich>=15.0.0",
 ]
 
@@ -25,5 +25,6 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "pyinstaller>=6.22.3",
     "pytest>=9.2.0",
 ]

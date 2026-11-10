@@ -1,6 +1,6 @@
 # bacscan — Specification
 
-Status: **v0.3** (2026-11-10) — v0.2 approved; v0.3 adds the network environment survey (§4.7, M4)
+Status: **v1.0** (2026-11-10) — all milestones implemented — v0.2 approved; v0.3 adds the network environment survey (§4.7, M4)
 
 ## 1. Purpose
 
@@ -230,7 +230,7 @@ object(id, device_id, object_type, instance, object_name, description, present_v
 - **M4 network survey done**: E1–E9 (link/MAC incl. randomized-MAC detection, DHCP, gateway, DNS, internet incl. VPN-route detection, public IP opt-in, BACnet device MACs + OUI vendor, ARP hosts, opt-in sweep ≤ /22); CLI `netinfo`, `scans show --network`, hosts CSV; GUI *Network* tab; DB migration for older databases. Wi-Fi SSID is hidden by macOS unless location access is granted. E10 (LLDP/CDP) moved to M5.
 - **M5 done**: XLSX export (summary, devices, objects, network, hosts, BACnet traffic, sheet per device); scan diff (devices, device fields, objects, optional values, network, hosts by MAC) in CLI `scans diff` and GUI *Compare scans*; passive listen (D6) that never replies, CLI `listen` and GUI *Listen…*; LLDP/CDP switch port (E10) via tcpdump, decoded in Python, CLI `--lldp`, GUI checkbox.
 - Not yet verified against real equipment: BBMD, BACnet routers / MS/TP, LLDP/CDP from a real switch (tested with an injected frame).
-- Open: M6 `.app` bundle.
+- **M6 done**: `scripts/build_app.sh` builds `bacscan.app` (PyInstaller, ~87 MB, PySide6-Essentials only) and a DMG (~38 MB); one executable for GUI (no arguments) and CLI (with arguments); Info.plist with `NSLocalNetworkUsageDescription`; app icon; ad-hoc signed, Developer ID signing + notarization documented in README.
 
 ## 11. Decisions (answers to open questions, 2026-11-10)
 1. MS/TP: reached via BACnet/IP routers only; no RS-485 adapter support.

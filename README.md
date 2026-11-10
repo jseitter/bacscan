@@ -6,6 +6,31 @@ details and objects, and keep every scan in a local database for later use.
 
 See [SPEC.md](SPEC.md) for the full specification.
 
+## Install the macOS app
+
+```sh
+./scripts/build_app.sh          # -> dist/bacscan.app and dist/bacscan-<version>.dmg
+```
+
+Copy `bacscan.app` to `/Applications` and double-click it for the GUI. The same app is the
+command line tool:
+
+```sh
+sudo ln -sf /Applications/bacscan.app/Contents/MacOS/bacscan /usr/local/bin/bacscan
+bacscan scan --site "Building A"
+```
+
+The build is ad-hoc signed, which is fine on the Mac that built it. Because an ad-hoc signature
+changes with every build, macOS asks again for the firewall / *Local Network* permission after
+each rebuild. To give the app to other Macs, sign it with a Developer ID and notarize it:
+
+```sh
+codesign --force --deep --options runtime --sign "Developer ID Application: <name> (<team>)" dist/bacscan.app
+ditto -c -k --keepParent dist/bacscan.app bacscan.zip
+xcrun notarytool submit bacscan.zip --keychain-profile <profile> --wait
+xcrun stapler staple dist/bacscan.app
+```
+
 ## Setup (development)
 
 ```sh
