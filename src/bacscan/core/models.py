@@ -115,8 +115,21 @@ class Host:
     vendor: str = ""
     hostname: str = ""
     bacnet_instance: int | None = None  # set when this host is a BACnet device
-    source: str = "arp"  # arp | sweep | local
+    source: str = "arp"  # arp | sweep | local | deep
     note: str = ""  # e.g. "gateway", "this Mac", "BACnet router"
+    # deep discovery (E11)
+    rtt_ms: float | None = None  # ICMP echo round trip
+    ttl: int | None = None
+    os_hint: str = ""  # from TTL
+    kind: str = ""  # best guess, e.g. "Niagara station (Tridium)", "printer"
+    ports: list[int] = field(default_factory=list)  # open TCP ports
+    services: dict[str, str] = field(default_factory=dict)  # "80/tcp http" -> "200 OK · title …"
+    layers: list[str] = field(default_factory=list)  # where it answered: arp, icmp, tcp, mdns, ssdp, netbios
+
+    DETAIL_FIELDS = ("rtt_ms", "ttl", "os_hint", "kind", "ports", "services", "layers")
+
+    def details(self) -> dict:
+        return {k: getattr(self, k) for k in self.DETAIL_FIELDS}
 
 
 @dataclass

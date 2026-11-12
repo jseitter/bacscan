@@ -121,3 +121,24 @@ def test_gui_scan(qapp, tmp_path, port_pair):
     finally:
         win.close()
         sim.close()
+
+
+def test_gui_host_details(qapp, tmp_path):
+    from bacscan.core.models import Host, Scan
+
+    settings = QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat)
+    win = MainWindow(tmp_path / "gui.db", settings)
+    try:
+        assert hasattr(win, "deep_cb") and not win.deep_cb.isChecked()
+        h = Host(ip="10.0.0.3", mac="00:11:22:33:44:55", rtt_ms=1.5, ttl=128, os_hint="Windows",
+                 kind="Niagara station (Tridium)", ports=[443, 4911], layers=["arp", "icmp", "tcp"],
+                 services={"443/tcp https": "200 OK · title Workbench"})
+        win.show_scan(Scan(hosts=[h], network={"deep_discovery": {"hosts": 1, "ports": [443, 4911]}}))
+        win.host_view.selectRow(0)
+        rows = dict(win.host_detail_model.items)
+        assert rows["Kind"] == "Niagara station (Tridium)"
+        assert rows["443/tcp https"] == "200 OK · title Workbench"
+        assert rows["Ping"] == "1.5 ms, TTL 128 (Windows)"
+        assert ("Deep discovery", "1 host(s) answered; TCP ports checked: 2") in win.env_model.items
+    finally:
+        win.close()

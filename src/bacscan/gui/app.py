@@ -307,15 +307,20 @@ class MainWindow(QMainWindow):
                                  "Test DNS / HTTP / HTTPS reachability of the internet")
         self.sweep_cb = check("Sweep subnet", "sweep", False,
                               "Probe every address of the local subnet (max /22) to find all hosts")
+        self.deep_cb = check("Deep discovery", "deep", False,
+                             "Find and identify every host on the local subnet (max /22): ARP, ping, "
+                             "TCP ports, web page titles, TLS certificates, mDNS, UPnP, NetBIOS. "
+                             "Active: sends queries to every address.")
         self.public_ip_cb = check("Public IP", "public_ip", False,
                                   "Look up the public IP address (contacts api.ipify.org)")
         self.switch_cb = check("Switch port (LLDP/CDP)", "switch_info", False,
                                "Wait up to 35 s for the switch to announce itself (name, port, VLAN). "
                                "Needs packet capture rights.")
         self.netinfo_cb.toggled.connect(lambda on: [w.setEnabled(on) for w in
-                                                     (self.internet_cb, self.sweep_cb, self.public_ip_cb)])
+                                                     (self.internet_cb, self.sweep_cb, self.deep_cb, self.public_ip_cb)])
         checks = QHBoxLayout()
-        for cb in (self.netinfo_cb, self.internet_cb, self.sweep_cb, self.public_ip_cb, self.switch_cb):
+        for cb in (self.netinfo_cb, self.internet_cb, self.sweep_cb, self.deep_cb, self.public_ip_cb,
+                   self.switch_cb):
             checks.addWidget(cb)
         checks.addStretch(1)
         g.addLayout(checks, 2, 1, 1, 7)
@@ -432,7 +437,18 @@ class MainWindow(QMainWindow):
         hh.addWidget(self.hosts_title, 1)
         hh.addWidget(self.host_filter, 2)
         hv.addLayout(hh)
-        hv.addWidget(self.host_view)
+        self.host_detail_model = PropertyModel(self)
+        self.host_detail_view = _table(self.host_detail_model, stretch_col=1)
+        self.host_detail_view.setSortingEnabled(False)
+        self.host_detail_view.setWordWrap(True)
+        self.host_detail_view.customContextMenuRequested.connect(
+            lambda pos: self._copy_menu(self.host_detail_view, pos))
+        self.host_view.selectionModel().currentRowChanged.connect(self._host_selected)
+        host_split = QSplitter(Qt.Orientation.Vertical)
+        host_split.addWidget(self.host_view)
+        host_split.addWidget(self.host_detail_view)
+        host_split.setSizes([450, 200])
+        hv.addWidget(host_split)
         self.traffic_model = TrafficModel(self)
         self.traffic_proxy = FilterProxy(self)
         self.traffic_proxy.setSourceModel(self.traffic_model)
@@ -592,6 +608,7 @@ class MainWindow(QMainWindow):
         s = self.scan
         self.env_model.set_items(netinfo.summarize(s.network) if s and s.network else [])
         self.host_model.set_items(s.hosts if s else [])
+        self.host_detail_model.set_items([])
         traffic = s.network.get("bacnet_traffic", []) if s and s.network else []
         self.traffic_model.set_items(traffic)
         self.traffic_box.setVisible(bool(traffic))
@@ -606,6 +623,14 @@ class MainWindow(QMainWindow):
         if s and (s.network or s.hosts):
             label += f" ({n} host{'s' if n != 1 else ''}" + (f" · internet {inet}" if inet else "") + ")"
         self.tabs.setTabText(1, label)
+
+    def _host_selected(self, current, _previous=None) -> None:
+        if not current.isValid():
+            self.host_detail_model.set_items([])
+            return
+        h = self.host_model.items[self.host_proxy.mapToSource(current).row()]
+        self.host_detail_model.set_items(HostModel.detail_rows(h))
+        self.host_detail_view.resizeRowsToContents()
 
     def _host_activated(self, index) -> None:
         """Double-click on a BACnet host jumps to the device."""
@@ -711,6 +736,7 @@ class MainWindow(QMainWindow):
             network_info=self.netinfo_cb.isChecked(),
             internet_checks=self.internet_cb.isChecked(),
             sweep=self.sweep_cb.isChecked(),
+            deep=self.deep_cb.isChecked(),
             public_ip=self.public_ip_cb.isChecked(),
             switch_info=self.switch_cb.isChecked(),
         )

@@ -67,6 +67,22 @@ uv run bacscan scans show latest --network
 uv run bacscan scans export latest -f hosts -o hosts.csv
 ```
 
+**Deep discovery** (`--deep`, GUI: *Deep discovery* checkbox) goes further and identifies every
+host on the local subnet (max /22), layer by layer: ARP, ping (round-trip time and TTL as an OS
+hint), a TCP connect check of building and IT ports (HTTP(S), SSH, Telnet, Modbus, S7, Niagara
+Fox, OPC UA, MQTT, RDP, SMB, printers, cameras …), web page titles, server headers and TLS
+certificate names, SSH/FTP banners, Bonjour/mDNS services, UPnP device descriptions and NetBIOS
+names. Each host gets a best-guess kind (e.g. *Niagara station*, *Modbus TCP device*, *printer*).
+It only sends queries — no logins, no writes — but it does contact every address, so use it
+only where you are allowed to scan. A /24 takes about 10–30 s.
+
+```sh
+uv run bacscan netinfo --deep              # survey + deep discovery, no BACnet
+uv run bacscan scan --deep                 # BACnet scan plus deep discovery
+uv run bacscan scan --deep --ports 80,443,502,1911,4911,47808   # own port list ('none' = no TCP)
+uv run bacscan scans show latest --network # hosts table plus per-host service details
+```
+
 Switch port (which switch, port and VLAN you are plugged into) is read from LLDP/CDP
 announcements, passively: `--lldp` (GUI: *Switch port* checkbox) waits up to 35 s. This needs
 packet-capture rights: run with `sudo`, or install Wireshark (its *ChmodBPF* lets your user capture).

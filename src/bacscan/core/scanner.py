@@ -20,7 +20,7 @@ from bacpypes3.pdu import Address
 from bacpypes3.primitivedata import ObjectIdentifier
 
 from .. import __version__
-from . import lldp, netinfo
+from . import discover, lldp, netinfo
 from . import network as netmod
 from .models import BacnetObject, Device, PropValue, Router, Scan, now_iso
 from .values import error_text, is_unknown_property, to_json, to_text
@@ -131,6 +131,8 @@ class ScanConfig:
     internet_checks: bool = True  # DNS/HTTP/HTTPS internet reachability tests
     public_ip: bool = False  # opt-in: ask an external service for the public IP
     sweep: bool = False  # opt-in: probe every address of the local subnet to fill the ARP table
+    deep: bool = False  # opt-in: deep host discovery (ICMP, TCP ports, HTTP, mDNS, SSDP, NetBIOS); implies sweep
+    deep_ports: list[int] | None = None  # TCP ports for deep discovery (None = default list, [] = no TCP)
     switch_info: bool = False  # opt-in: wait for an LLDP/CDP frame (passive, needs capture rights)
     switch_wait: float = lldp.DEFAULT_WAIT
     notes: str = ""
@@ -496,7 +498,7 @@ class Scanner:
                 inet = self.scan.network.get("internet", {}).get("status", "not checked")
                 self._emit("network", f"network: internet {inet}")
             swept = False
-            if self.cfg.sweep and not self._cancelled:
+            if (self.cfg.sweep or self.cfg.deep) and not self._cancelled:
                 self._emit("log", f"sweeping {iface.network} to find all hosts")
                 try:
                     n = await asyncio.to_thread(netinfo.sweep, iface, lambda: self._cancelled)
@@ -504,9 +506,21 @@ class Scanner:
                     self._emit("log", f"sweep probed {n} address(es)")
                 except ValueError as e:  # subnet too large
                     self._emit("log", f"sweep skipped: {e}", level=logging.WARNING)
+            deep = None
+            if self.cfg.deep and not self._cancelled:
+                try:
+                    deep = await discover.deep_scan(
+                        iface, self.cfg.deep_ports, lambda m: self._emit("network", m), lambda: self._cancelled)
+                except ValueError as e:  # subnet too large
+                    self._emit("log", f"deep discovery skipped: {e}", level=logging.WARNING)
             bacnet = {d.ip: d.instance for d in self.scan.devices if d.ip}
             gateway = self.scan.network.get("gateway", {}).get("ip")
-            hosts = await asyncio.to_thread(netinfo.collect_hosts, iface, bacnet, gateway, swept)
+            hosts = await asyncio.to_thread(netinfo.collect_hosts, iface, bacnet, gateway, swept or bool(deep))
+            if deep is not None:
+                hosts = discover.merge(hosts, deep)
+                self.scan.network["deep_discovery"] = {
+                    "ports": self.cfg.deep_ports if self.cfg.deep_ports is not None else sorted(discover.PORTS),
+                    "hosts": len(deep)}
             self.scan.hosts = hosts
             self._apply_macs()
             self._emit("network", f"network: {len(hosts)} host(s) on {iface.network}")

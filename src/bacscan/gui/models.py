@@ -174,8 +174,22 @@ class HostModel(_ListModel):
         ("Hostname", lambda h: h.hostname),
         ("BACnet", lambda h: h.bacnet_instance),
         ("Note", lambda h: h.note),
+        ("Kind", lambda h: h.kind),
+        ("Ping ms", lambda h: h.rtt_ms),
+        ("Open TCP ports", lambda h: " ".join(map(str, h.ports))),
         ("Source", lambda h: h.source),
     ]
+
+    @staticmethod
+    def detail_rows(h: Host) -> list[tuple[str, str]]:
+        rows = [("IP", h.ip), ("MAC", f"{h.mac} {h.vendor}".strip()), ("Hostname", h.hostname),
+                ("Kind", h.kind), ("Note", h.note)]
+        if h.rtt_ms is not None:
+            rows.append(("Ping", f"{h.rtt_ms:.1f} ms, TTL {h.ttl} ({h.os_hint})"))
+        if h.layers:
+            rows.append(("Answered on", ", ".join(h.layers)))
+        rows += list(h.services.items())
+        return [(k, v) for k, v in rows if v]
 
     def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
         if index.isValid() and index.column() == 0 and role in (Qt.ItemDataRole.DisplayRole,

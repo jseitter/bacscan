@@ -140,12 +140,21 @@ def export_xlsx(scan: Scan, path: str | Path, per_device_sheets: bool = True) ->
     if scan.hosts:
         names = {d.instance: d.name for d in scan.devices}
         ws = wb.create_sheet("Hosts")
-        _header(ws, ["IP", "MAC", "Vendor", "Hostname", "BACnet instance", "BACnet name", "Note", "Source"])
+        _header(ws, ["IP", "MAC", "Vendor", "Hostname", "BACnet instance", "BACnet name", "Note", "Source",
+                     "Kind", "Ping ms", "TTL", "OS hint", "Open TCP ports", "Answered on"])
         for h in scan.hosts:
             ws.append([h.ip, h.mac, _clean(h.vendor), _clean(h.hostname), h.bacnet_instance,
                        _clean(names.get(h.bacnet_instance, "")) if h.bacnet_instance is not None else "",
-                       h.note, h.source])
+                       h.note, h.source, h.kind, h.rtt_ms, h.ttl, h.os_hint, " ".join(map(str, h.ports)),
+                       " ".join(h.layers)])
         _finish(ws)
+        if any(h.services for h in scan.hosts):
+            ws = wb.create_sheet("Services")
+            _header(ws, ["IP", "Hostname", "Service", "Detail"])
+            for h in scan.hosts:
+                for k, v in h.services.items():
+                    ws.append([h.ip, _clean(h.hostname), k, _clean(v)])
+            _finish(ws, max_width=100)
 
     # one sheet per device: properties, then objects
     if per_device_sheets:

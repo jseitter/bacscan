@@ -11,10 +11,12 @@ from pathlib import Path
 
 from rich.console import Console
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
+from rich.markup import escape
 from rich.table import Table
+from rich.tree import Tree
 
 from .. import __version__
-from ..core import lldp, netinfo
+from ..core import discover, lldp, netinfo
 from ..core.listener import Listener
 from ..core import network as netmod
 from ..core.models import Scan
@@ -65,10 +67,23 @@ def _config_from_args(a: argparse.Namespace) -> ScanConfig:
         cfg.internet_checks = False
     cfg.public_ip = getattr(a, "public_ip", False)
     cfg.sweep = getattr(a, "sweep", False)
+    cfg.deep = getattr(a, "deep", False)
+    cfg.deep_ports = _ports(getattr(a, "ports", None))
     cfg.switch_info = getattr(a, "lldp", False)
     if getattr(a, "lldp_wait", None):
         cfg.switch_wait = a.lldp_wait
     return cfg
+
+
+def _ports(spec: str | None) -> list[int] | None:
+    if not spec:
+        return None
+    if spec.strip().lower() == "none":
+        return []
+    try:
+        return discover.parse_ports(spec)
+    except ValueError as e:
+        raise SystemExit(f"error: --ports: {e}")
 
 
 def _devices_table(scan: Scan) -> Table:
@@ -100,15 +115,36 @@ def _network_table(info: dict) -> Table:
 
 def _hosts_table(hosts, devices=None) -> Table:
     names = {d.instance: d.name for d in (devices or [])}
+    deep = any(h.layers for h in hosts)
     t = Table(title=f"Hosts on the network ({len(hosts)})", header_style="bold")
     t.add_column("IP", no_wrap=True)
     t.add_column("MAC", no_wrap=True)
-    for c in ("Vendor", "Hostname", "BACnet", "Note"):
+    cols = ["Vendor", "Hostname", "BACnet", "Note"] + (["Ping", "Open TCP ports", "Kind"] if deep else [])
+    for c in cols:
         t.add_column(c, overflow="fold")
     for h in hosts:
         bac = "" if h.bacnet_instance is None else f"{h.bacnet_instance} {names.get(h.bacnet_instance, '')}".strip()
-        t.add_row(h.ip, h.mac, h.vendor, h.hostname, f"[green]{bac}[/green]" if bac else "", h.note)
+        row = [h.ip, h.mac, h.vendor, h.hostname, f"[green]{bac}[/green]" if bac else "", h.note]
+        if deep:
+            ping = f"{h.rtt_ms:.1f} ms ttl {h.ttl}" if h.rtt_ms is not None else "-"
+            row += [ping, " ".join(map(str, h.ports)), h.kind]
+        t.add_row(*row)
     return t
+
+
+def _services_tree(hosts) -> Tree | None:
+    """Per-host service details found by deep discovery."""
+    tree = Tree("[bold]Services[/bold]")
+    for h in hosts:
+        if not h.services:
+            continue
+        label = f"[bold]{h.ip}[/bold] {h.hostname}".strip()
+        extra = " · ".join(x for x in (h.kind, h.os_hint and f"TTL: {h.os_hint}",
+                                       "answered: " + ", ".join(h.layers) if h.layers else "") if x)
+        node = tree.add(f"{label} [dim]{extra}[/dim]")
+        for k, v in h.services.items():
+            node.add(f"[cyan]{k}[/cyan] {escape(v)}" if v else f"[cyan]{k}[/cyan]")
+    return tree if tree.children else None
 
 
 def _open_store(a: argparse.Namespace) -> Store:
@@ -216,14 +252,22 @@ def cmd_netinfo(a: argparse.Namespace) -> int:
     with console.status(f"surveying {iface.name}…"):
         info = netinfo.survey_environment(iface, internet=not a.no_internet, public_ip=a.public_ip)
         swept = False
-        if a.sweep:
+        if a.sweep or a.deep:
             console.log(f"sweeping {iface.network}…")
             try:
                 netinfo.sweep(iface)
                 swept = True
             except ValueError as e:
                 err.print(f"[yellow]sweep skipped:[/yellow] {e}")
+        deep = None
+        if a.deep:
+            try:
+                deep = asyncio.run(discover.deep_scan(iface, _ports(a.ports), lambda m: console.print(f"[dim]{m}[/dim]")))
+            except ValueError as e:
+                err.print(f"[yellow]deep discovery skipped:[/yellow] {e}")
         hosts = netinfo.collect_hosts(iface, gateway=info.get("gateway", {}).get("ip"), swept=swept)
+        if deep is not None:
+            hosts = discover.merge(hosts, deep)
         if a.lldp:
             console.log(f"waiting up to {a.lldp_wait:.0f} s for LLDP/CDP from the switch…")
             info["switch"] = lldp.capture(iface.name, a.lldp_wait)
@@ -232,6 +276,9 @@ def cmd_netinfo(a: argparse.Namespace) -> int:
         return 0
     console.print(_network_table(info))
     console.print(_hosts_table(hosts))
+    tree = _services_tree(hosts)
+    if tree:
+        console.print(tree)
     return 0
 
 
@@ -385,6 +432,9 @@ def cmd_scans_show(a: argparse.Namespace) -> int:
             return 0
         console.print(_network_table(scan.network))
         console.print(_hosts_table(scan.hosts, scan.devices))
+        tree = _services_tree(scan.hosts)
+        if tree:
+            console.print(tree)
         return 0
     console.print(_devices_table(scan))
     inet = scan.network.get("internet", {}).get("status")
@@ -473,6 +523,12 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--public-ip", action="store_true", help="look up the public IP (contacts api.ipify.org)")
         sp.add_argument("--sweep", action="store_true",
                         help="probe every address of the local subnet (max /22) to find all hosts")
+        sp.add_argument("--deep", action="store_true",
+                        help="deep host discovery on the local subnet (max /22): ARP, ping, TCP ports, "
+                             "HTTP/TLS, mDNS, SSDP/UPnP, NetBIOS; implies --sweep")
+        sp.add_argument("--ports", metavar="LIST",
+                        help="TCP ports for --deep, e.g. 80,443,8000-8100 (default: building/IT list; "
+                             "'none' = no TCP)")
         sp.add_argument("--lldp", action="store_true",
                         help="wait for an LLDP/CDP announcement to identify switch, port and VLAN")
         sp.add_argument("--lldp-wait", type=float, default=lldp.DEFAULT_WAIT,

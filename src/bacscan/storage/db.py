@@ -78,6 +78,7 @@ MIGRATIONS = [
     ("device", "eth_mac", "TEXT"),
     ("device", "eth_vendor", "TEXT NOT NULL DEFAULT ''"),
     ("device", "eth_mac_source", "TEXT NOT NULL DEFAULT ''"),
+    ("host", "details_json", "TEXT NOT NULL DEFAULT '{}'"),
 ]
 
 
@@ -107,6 +108,11 @@ def _props_to_json(props: dict[str, PropValue]) -> str:
 
 def _props_from_json(s: str) -> dict[str, PropValue]:
     return {k: PropValue.from_dict(v) for k, v in json.loads(s or "{}").items()}
+
+
+def _host_details(s: str | None) -> dict:
+    d = json.loads(s or "{}")
+    return {k: v for k, v in d.items() if k in Host.DETAIL_FIELDS}
 
 
 class Store:
@@ -153,9 +159,11 @@ class Store:
             )
             scan.id = cur.lastrowid
             self.conn.executemany(
-                """INSERT INTO host (scan_id, ip, mac, vendor, hostname, bacnet_instance, source, note)
-                   VALUES (?,?,?,?,?,?,?,?)""",
-                [(scan.id, h.ip, h.mac, h.vendor, h.hostname, h.bacnet_instance, h.source, h.note)
+                """INSERT INTO host (scan_id, ip, mac, vendor, hostname, bacnet_instance, source, note,
+                                     details_json)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                [(scan.id, h.ip, h.mac, h.vendor, h.hostname, h.bacnet_instance, h.source, h.note,
+                  json.dumps(h.details(), ensure_ascii=False))
                  for h in scan.hosts],
             )
             for d in scan.devices:
@@ -215,7 +223,8 @@ class Store:
             routers=[Router(**x) for x in json.loads(r["routers_json"])],
             network=json.loads(r["network_json"] or "{}"),
             hosts=[Host(ip=h["ip"], mac=h["mac"] or "", vendor=h["vendor"] or "", hostname=h["hostname"] or "",
-                        bacnet_instance=h["bacnet_instance"], source=h["source"] or "", note=h["note"] or "")
+                        bacnet_instance=h["bacnet_instance"], source=h["source"] or "", note=h["note"] or "",
+                        **_host_details(h["details_json"]))
                    for h in self.conn.execute("SELECT * FROM host WHERE scan_id = ? ORDER BY id", (scan_id,))],
         )
         for d in self.conn.execute("SELECT * FROM device WHERE scan_id = ? ORDER BY instance", (scan_id,)):

@@ -1,6 +1,6 @@
 # bacscan — Specification
 
-Status: **v1.0** (2026-11-10) — all milestones implemented — v0.2 approved; v0.3 adds the network environment survey (§4.7, M4)
+Status: **v1.1** (2026-11-12) — M1–M7 implemented — v0.2 approved; v0.3 adds the network environment survey (§4.7, M4)
 
 ## 1. Purpose
 
@@ -143,6 +143,7 @@ Everything is read from the Mac itself or gathered with harmless standard traffi
 | E8 | **Other hosts seen**: all entries of the ARP/neighbour table (IP, MAC, OUI vendor, reverse DNS name), marked whether they are a BACnet device. |
 | E9 | **Active host discovery** (opt-in `--sweep`): ARP/ping sweep of the local subnet (limited to /22 or smaller, throttled) to complete E8. |
 | E10 | **Switch port info** (optional, later): passively listen for LLDP/CDP frames to show switch name, port and VLAN (needs elevated rights; only if available). |
+| E11 | **Deep host discovery** (opt-in `--deep`, implies `--sweep`; local subnet ≤ /22, throttled): find and identify every host layer by layer — L2 ARP; L3 ICMP echo (round-trip time, TTL → rough OS hint); L4 TCP connect to a building/IT port list (FTP, SSH, Telnet, HTTP(S), S7, Modbus, Niagara Fox, OPC UA, MQTT, RDP, SMB, printer, RTSP, DNP3, IEC-104, EtherNet/IP …, `--ports` to change); L7 HTTP(S) `GET /` (status, Server header, page title, auth realm, TLS certificate name), first-line banners (SSH/FTP/Telnet/SMTP), mDNS/DNS-SD services and `.local` names, SSDP/UPnP device description, NetBIOS node status. Result per host: open ports, service details, which layers answered, a best-guess device kind. Only queries are sent; no logins, no writes, no vulnerability tests. |
 
 Results are stored per scan (`network` section in JSON export; separate CSV `hosts` export) and shown in the GUI on a *Network* tab next to the BACnet devices.
 
@@ -222,8 +223,9 @@ object(id, device_id, object_type, instance, object_name, description, present_v
 4. **M4 — Network environment survey** (§4.7): local link, DHCP, DNS, gateway, internet access, ARP/MAC + OUI vendors, hosts list, optional sweep; CLI + GUI *Network* tab.
 5. **M5 — Extras**: XLSX export, diff, passive listen, LLDP/CDP (E10).
 6. **M6 — Delivery**: signed-ready macOS `.app` bundle (PyInstaller), README.
+7. **M7 — Deep host discovery** (E11): CLI `--deep` / `--ports` on `scan` and `netinfo`, GUI *Deep discovery* checkbox and host details pane, stored per host, in hosts CSV / Excel (*Services* sheet), open-port changes in scan diff.
 
-## 10. Implementation status (2026-11-10)
+## 10. Implementation status (2026-11-12)
 - **M1 done**: interfaces, discovery (broadcast, unicast targets, instance range), device read-out, SQLite storage, CLI (`interfaces`, `scan`, `read`, `scans list/show/export/import/edit/delete`).
 - **M2 mostly done**: object lists incl. element-by-element fallback, RPM→RP fallback, JSON/CSV export. Router discovery and BBMD registration are implemented but **not yet tested against real hardware**.
 - **M3 GUI done**: live scan view, saved-scan browser, device/object/property tables with filter & sort, re-scan device, edit site/notes, JSON/CSV export & import, settings dialog, log panel.
@@ -231,6 +233,7 @@ object(id, device_id, object_type, instance, object_name, description, present_v
 - **M5 done**: XLSX export (summary, devices, objects, network, hosts, BACnet traffic, sheet per device); scan diff (devices, device fields, objects, optional values, network, hosts by MAC) in CLI `scans diff` and GUI *Compare scans*; passive listen (D6) that never replies, CLI `listen` and GUI *Listen…*; LLDP/CDP switch port (E10) via tcpdump, decoded in Python, CLI `--lldp`, GUI checkbox.
 - Not yet verified against real equipment: BBMD, BACnet routers / MS/TP, LLDP/CDP from a real switch (tested with an injected frame).
 - **M6 done**: `scripts/build_app.sh` builds `bacscan.app` (PyInstaller, ~87 MB, PySide6-Essentials only) and a DMG (~38 MB); one executable for GUI (no arguments) and CLI (with arguments); Info.plist with `NSLocalNetworkUsageDescription`; app icon; ad-hoc signed, Developer ID signing + notarization documented in README.
+- **M7 done**: deep host discovery (E11) in `core/discover.py`: unprivileged ICMP (no root), asyncio TCP connect (64 parallel, 1 s timeout) on hosts that answered on any layer, HTTP/TLS read-out, mDNS legacy-unicast browse, SSDP + UPnP description (only from the answering host, local subnet), NetBIOS NBSTAT. Multicast TTL 1. Tested against localhost (HTTP, TLS, ping) and the local VM bridge (mDNS, ping); not yet on a real building network.
 
 ## 11. Decisions (answers to open questions, 2026-11-10)
 1. MS/TP: reached via BACnet/IP routers only; no RS-485 adapter support.

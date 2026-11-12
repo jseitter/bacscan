@@ -451,6 +451,10 @@ def summarize(info: dict) -> list[tuple[str, str]]:
             if t:
                 add(f"Internet {k.upper()}", f"ok, {t['ms']:.0f} ms" if t["ok"] else f"failed ({t.get('error')})")
         add("Public IP", inet.get("public_ip"))
+    dd = info.get("deep_discovery")
+    if dd:
+        add("Deep discovery", f"{dd.get('hosts', 0)} host(s) answered; TCP ports checked: "
+                              f"{len(dd.get('ports') or [])}")
     if info.get("switch"):
         from .lldp import summarize as summarize_switch
         rows.extend(summarize_switch(info["switch"]))
