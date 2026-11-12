@@ -1,0 +1,14 @@
+#!/bin/sh
+# bacscan installer: link the command line tool. $3 = target volume ("/" normally).
+ROOT="${3:-/}"
+ROOT="${ROOT%/}"
+APP_BIN="/Applications/bacscan.app/Contents/MacOS/bacscan"
+LINK="$ROOT/usr/local/bin/bacscan"
+mkdir -p "$ROOT/usr/local/bin"
+if [ -e "$LINK" ] && [ ! -L "$LINK" ]; then
+    echo "bacscan: $LINK exists and is not a link - leaving it alone"
+    exit 0
+fi
+ln -sfn "$APP_BIN" "$LINK"
+echo "bacscan: linked $LINK -> $APP_BIN"
+exit 0

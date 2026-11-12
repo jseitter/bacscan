@@ -458,6 +458,9 @@ def summarize(info: dict) -> list[tuple[str, str]]:
     if info.get("switch"):
         from .lldp import summarize as summarize_switch
         rows.extend(summarize_switch(info["switch"]))
+    if info.get("snmp"):
+        from .snmp import summarize as summarize_snmp
+        rows.extend(summarize_snmp(info["snmp"]))
     add("Collected", info.get("collected_at"))
     if info.get("error"):
         add("Survey error", info["error"])

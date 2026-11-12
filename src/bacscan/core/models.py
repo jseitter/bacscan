@@ -75,6 +75,7 @@ class Device:
     eth_mac: str | None = None  # Ethernet MAC (from ARP) of the device or, if remote, its router
     eth_vendor: str = ""  # vendor from the MAC's OUI prefix
     eth_mac_source: str = ""  # "arp" (device itself) | "router" (device is behind a BACnet router)
+    switch_port: str = ""  # switch / port / VLAN of eth_mac, from SNMP (S4)
 
     @property
     def ip(self) -> str | None:
@@ -125,8 +126,9 @@ class Host:
     ports: list[int] = field(default_factory=list)  # open TCP ports
     services: dict[str, str] = field(default_factory=dict)  # "80/tcp http" -> "200 OK · title …"
     layers: list[str] = field(default_factory=list)  # where it answered: arp, icmp, tcp, mdns, ssdp, netbios
+    switch_port: str = ""  # from SNMP forwarding tables (S4), e.g. "sw-01 Gi1/0/5 (VLAN 20)"
 
-    DETAIL_FIELDS = ("rtt_ms", "ttl", "os_hint", "kind", "ports", "services", "layers")
+    DETAIL_FIELDS = ("rtt_ms", "ttl", "os_hint", "kind", "ports", "services", "layers", "switch_port")
 
     def details(self) -> dict:
         return {k: getattr(self, k) for k in self.DETAIL_FIELDS}

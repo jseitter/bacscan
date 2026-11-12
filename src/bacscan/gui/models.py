@@ -81,6 +81,7 @@ class DeviceModel(_ListModel):
         ("Location", lambda d: d.text("location")),
         ("MAC", lambda d: d.eth_mac),
         ("MAC vendor", lambda d: (d.eth_vendor + (" (router)" if d.eth_mac_source == "router" else "")).strip()),
+        ("Switch port", lambda d: d.switch_port),
         ("Objects", lambda d: len(d.objects)),
         ("Status", lambda d: d.status + (f" ({len(d.errors)} err)" if d.errors else "")),
     ]
@@ -177,13 +178,14 @@ class HostModel(_ListModel):
         ("Kind", lambda h: h.kind),
         ("Ping ms", lambda h: h.rtt_ms),
         ("Open TCP ports", lambda h: " ".join(map(str, h.ports))),
+        ("Switch port", lambda h: h.switch_port),
         ("Source", lambda h: h.source),
     ]
 
     @staticmethod
     def detail_rows(h: Host) -> list[tuple[str, str]]:
         rows = [("IP", h.ip), ("MAC", f"{h.mac} {h.vendor}".strip()), ("Hostname", h.hostname),
-                ("Kind", h.kind), ("Note", h.note)]
+                ("Kind", h.kind), ("Note", h.note), ("Switch port", h.switch_port)]
         if h.rtt_ms is not None:
             rows.append(("Ping", f"{h.rtt_ms:.1f} ms, TTL {h.ttl} ({h.os_hint})"))
         if h.layers:

@@ -79,6 +79,7 @@ MIGRATIONS = [
     ("device", "eth_vendor", "TEXT NOT NULL DEFAULT ''"),
     ("device", "eth_mac_source", "TEXT NOT NULL DEFAULT ''"),
     ("host", "details_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("device", "switch_port", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
@@ -171,13 +172,13 @@ class Store:
                     """INSERT INTO device (scan_id, instance, address, network, mac, router, vendor_id,
                            vendor_name, model_name, object_name, firmware, app_version, max_apdu,
                            segmentation, first_seen, status, props_json, errors_json,
-                           eth_mac, eth_vendor, eth_mac_source)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                           eth_mac, eth_vendor, eth_mac_source, switch_port)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (scan.id, d.instance, d.address, d.network, d.mac, d.router, d.vendor_id,
                      d.text("vendor-name"), d.text("model-name"), d.name, d.text("firmware-revision"),
                      d.text("application-software-version"), d.max_apdu, d.segmentation,
                      d.first_seen, d.status, _props_to_json(d.props), json.dumps(d.errors),
-                     d.eth_mac, d.eth_vendor, d.eth_mac_source),
+                     d.eth_mac, d.eth_vendor, d.eth_mac_source, d.switch_port),
                 )
                 self.conn.executemany(
                     """INSERT INTO object (device_id, object_type, instance, object_name, description,
@@ -234,6 +235,7 @@ class Store:
                 segmentation=d["segmentation"], first_seen=d["first_seen"], status=d["status"],
                 props=_props_from_json(d["props_json"]), errors=json.loads(d["errors_json"]),
                 eth_mac=d["eth_mac"], eth_vendor=d["eth_vendor"] or "", eth_mac_source=d["eth_mac_source"] or "",
+                switch_port=d["switch_port"] or "",
             )
             for o in self.conn.execute(
                 "SELECT * FROM object WHERE device_id = ? ORDER BY id", (d["id"],)

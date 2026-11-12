@@ -57,7 +57,7 @@ def export_csv(scan: Scan, path: str | Path) -> int:
 
 
 HOST_COLUMNS = ["ip", "mac", "mac_vendor", "hostname", "bacnet_instance", "bacnet_device_name", "note", "source",
-                "kind", "ping_ms", "ttl", "os_hint", "open_tcp_ports", "answered_on", "services"]
+                "kind", "ping_ms", "ttl", "os_hint", "open_tcp_ports", "answered_on", "services", "switch_port"]
 
 
 def services_text(h) -> str:
@@ -76,5 +76,5 @@ def export_hosts_csv(scan: Scan, path: str | Path) -> int:
                         names.get(h.bacnet_instance, "") if h.bacnet_instance is not None else "",
                         h.note, h.source, h.kind, "" if h.rtt_ms is None else h.rtt_ms,
                         "" if h.ttl is None else h.ttl, h.os_hint, " ".join(map(str, h.ports)),
-                        " ".join(h.layers), services_text(h)])
+                        " ".join(h.layers), services_text(h), h.switch_port])
     return len(scan.hosts)

@@ -37,6 +37,7 @@ DEVICE_COLUMNS = [
     ("Segmentation", lambda d: d.segmentation),
     ("Ethernet MAC", lambda d: d.eth_mac),
     ("MAC vendor", lambda d: (d.eth_vendor + (" (router)" if d.eth_mac_source == "router" else "")).strip()),
+    ("Switch port", lambda d: d.switch_port),
     ("Objects", lambda d: len(d.objects)),
     ("Status", lambda d: d.status),
     ("Errors", lambda d: "; ".join(d.errors)),
@@ -141,12 +142,12 @@ def export_xlsx(scan: Scan, path: str | Path, per_device_sheets: bool = True) ->
         names = {d.instance: d.name for d in scan.devices}
         ws = wb.create_sheet("Hosts")
         _header(ws, ["IP", "MAC", "Vendor", "Hostname", "BACnet instance", "BACnet name", "Note", "Source",
-                     "Kind", "Ping ms", "TTL", "OS hint", "Open TCP ports", "Answered on"])
+                     "Kind", "Ping ms", "TTL", "OS hint", "Open TCP ports", "Answered on", "Switch port"])
         for h in scan.hosts:
             ws.append([h.ip, h.mac, _clean(h.vendor), _clean(h.hostname), h.bacnet_instance,
                        _clean(names.get(h.bacnet_instance, "")) if h.bacnet_instance is not None else "",
                        h.note, h.source, h.kind, h.rtt_ms, h.ttl, h.os_hint, " ".join(map(str, h.ports)),
-                       " ".join(h.layers)])
+                       " ".join(h.layers), h.switch_port])
         _finish(ws)
         if any(h.services for h in scan.hosts):
             ws = wb.create_sheet("Services")
@@ -155,6 +156,39 @@ def export_xlsx(scan: Scan, path: str | Path, per_device_sheets: bool = True) ->
                 for k, v in h.services.items():
                     ws.append([h.ip, _clean(h.hostname), k, _clean(v)])
             _finish(ws, max_width=100)
+
+    snmp = (scan.network or {}).get("snmp") or {}
+    if snmp.get("agents"):
+        ws = wb.create_sheet("SNMP agents")
+        _header(ws, ["IP", "Answered", "Version", "sysName", "sysDescr", "sysLocation", "sysContact", "Uptime",
+                     "Model", "Serial", "Software", "MAC entries", "Error"])
+        for a in snmp["agents"]:
+            e = a.get("entity") or {}
+            ws.append([a["ip"], "yes" if a.get("ok") else "no", a.get("version"), _clean(a.get("sysName", "")),
+                       _clean(a.get("sysDescr", "")), _clean(a.get("sysLocation", "")),
+                       _clean(a.get("sysContact", "")), a.get("sysUpTime", ""), _clean(e.get("model", "")),
+                       _clean(e.get("serial", "")), _clean(e.get("software", "")), a.get("fdb_entries"),
+                       a.get("error", "")])
+        _finish(ws, max_width=80)
+        ifrows = [(a, i) for a in snmp["agents"] for i in a.get("interfaces", [])]
+        if ifrows:
+            ws = wb.create_sheet("SNMP interfaces")
+            _header(ws, ["Agent", "sysName", "ifIndex", "Name", "Alias", "Type", "Speed Mb/s", "Admin", "Oper",
+                         "MAC", "MACs learned"])
+            for a, i in ifrows:
+                ws.append([a["ip"], _clean(a.get("sysName", "")), i["index"], _clean(i["name"]), _clean(i["alias"]),
+                           i["type"], i["speed_mbps"], i["admin"], i["oper"], i["mac"],
+                           (a.get("port_mac_counts") or {}).get(i["name"])])
+            _finish(ws)
+        nrows = [(a, n) for a in snmp["agents"] for n in a.get("lldp", [])]
+        if nrows:
+            ws = wb.create_sheet("SNMP LLDP")
+            _header(ws, ["Agent", "sysName", "Local port", "Neighbour", "Neighbour port", "Port description",
+                         "Chassis"])
+            for a, n in nrows:
+                ws.append([a["ip"], _clean(a.get("sysName", "")), _clean(n["local_port"]), _clean(n["remote_name"]),
+                           _clean(n["remote_port"]), _clean(n["remote_port_desc"]), _clean(n["remote_chassis"])])
+            _finish(ws)
 
     # one sheet per device: properties, then objects
     if per_device_sheets:

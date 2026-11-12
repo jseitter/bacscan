@@ -5,8 +5,8 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QAction, QBrush, QColor, QGuiApplication, QKeySequence
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -47,6 +47,7 @@ from .. import __version__
 from ..core import netinfo
 from ..core import network as netmod
 from ..core.models import Device, Scan
+from ..core.values import error_text
 from ..core.scanner import LEVELS, ScanConfig, ScanEvent
 from ..storage.db import Store
 from ..storage.diff import diff_lines, diff_scans
@@ -122,6 +123,141 @@ class ScanInfoDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+
+
+class ReportDialog(QDialog):
+    """Options for the site report (spec R7)."""
+
+    def __init__(self, settings: QSettings, parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.setWindowTitle("Create site report")
+        form = QFormLayout(self)
+        self.format = QComboBox()
+        self.format.addItem("PDF", "pdf")
+        self.format.addItem("HTML (opens in a browser)", "html")
+        self.format.setCurrentIndex(max(0, self.format.findData(settings.value("report_format", "pdf"))))
+        self.author = QLineEdit(str(settings.value("report_author", "")))
+        self.author.setPlaceholderText("e.g. your name and company")
+        self.objects = QCheckBox("Append full object list of every device")
+        self.objects.setChecked(str(settings.value("report_objects", False)).lower() == "true")
+        self.open_after = QCheckBox("Open the report when done")
+        self.open_after.setChecked(str(settings.value("report_open", True)).lower() == "true")
+        form.addRow("Format", self.format)
+        form.addRow("Author", self.author)
+        form.addRow("", self.objects)
+        form.addRow("", self.open_after)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Create…")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def accept(self) -> None:
+        s = self.settings
+        s.setValue("report_format", self.format.currentData())
+        s.setValue("report_author", self.author.text().strip())
+        s.setValue("report_objects", self.objects.isChecked())
+        s.setValue("report_open", self.open_after.isChecked())
+        super().accept()
+
+
+class SnmpDialog(QDialog):
+    """SNMP credentials and targets (spec S6). Secrets stay in memory for this session only."""
+
+    def __init__(self, settings: QSettings, creds, parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.creds = creds
+        self.setWindowTitle("SNMP read-out")
+        form = QFormLayout(self)
+        self.version = QComboBox()
+        self.version.addItem("SNMP v2c (community)", "v2c")
+        self.version.addItem("SNMP v3 (user)", "v3")
+        self.community = QLineEdit(creds.community if creds else "")
+        self.community.setEchoMode(QLineEdit.EchoMode.Password)
+        self.user = QLineEdit(creds.user if creds else str(settings.value("snmp_user", "")))
+        self.auth_proto = QComboBox()
+        for p in ("SHA", "SHA256", "MD5", ""):
+            self.auth_proto.addItem(p or "none", p)
+        self.auth_pass = QLineEdit(creds.auth_pass if creds else "")
+        self.auth_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        self.priv_proto = QComboBox()
+        for p in ("AES", ""):
+            self.priv_proto.addItem(p or "none", p)
+        self.priv_pass = QLineEdit(creds.priv_pass if creds else "")
+        self.priv_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        version = creds.version if creds else str(settings.value("snmp_version", "v2c"))
+        self.version.setCurrentIndex(max(0, self.version.findData(version)))
+        self.auth_proto.setCurrentIndex(max(0, self.auth_proto.findData(
+            creds.auth_proto if creds else str(settings.value("snmp_auth_proto", "SHA")))))
+        self.priv_proto.setCurrentIndex(max(0, self.priv_proto.findData(
+            creds.priv_proto if creds else str(settings.value("snmp_priv_proto", "AES")))))
+        self.targets = QLineEdit(str(settings.value("snmp_targets", "")))
+        self.targets.setPlaceholderText("e.g. 10.0.0.2, 10.0.1.0/28")
+        self.auto = QCheckBox("Also the gateway and the switch found via LLDP/CDP")
+        self.auto.setChecked(str(settings.value("snmp_auto", True)).lower() == "true")
+        self.all_hosts = QCheckBox("Also every host found on the network")
+        self.all_hosts.setChecked(str(settings.value("snmp_hosts", False)).lower() == "true")
+        note = QLabel("Read-only (GET / GETNEXT / GETBULK). Passwords and the community are kept in memory "
+                      "for this session only and never saved.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: gray")
+        form.addRow("Version", self.version)
+        form.addRow("Community", self.community)
+        form.addRow("User", self.user)
+        form.addRow("Authentication", self.auth_proto)
+        form.addRow("Auth password", self.auth_pass)
+        form.addRow("Privacy", self.priv_proto)
+        form.addRow("Privacy password", self.priv_pass)
+        form.addRow("Targets", self.targets)
+        form.addRow("", self.auto)
+        form.addRow("", self.all_hosts)
+        form.addRow(note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+        self.version.currentIndexChanged.connect(self._update)
+        self.auth_proto.currentIndexChanged.connect(self._update)
+        self._update()
+
+    def _update(self) -> None:
+        v3 = self.version.currentData() == "v3"
+        self.community.setEnabled(not v3)
+        for w in (self.user, self.auth_proto, self.auth_pass, self.priv_proto, self.priv_pass):
+            w.setEnabled(v3)
+        auth = bool(self.auth_proto.currentData())
+        self.auth_pass.setEnabled(v3 and auth)
+        self.priv_proto.setEnabled(v3 and auth)
+        self.priv_pass.setEnabled(v3 and auth and bool(self.priv_proto.currentData()))
+
+    def accept(self) -> None:
+        from ..core.snmp import Credentials, expand_targets
+        v3 = self.version.currentData() == "v3"
+        auth = self.auth_proto.currentData() if v3 else ""
+        priv = self.priv_proto.currentData() if v3 and auth else ""
+        try:
+            self.creds = Credentials(self.version.currentData(), community=self.community.text(),
+                                     user=self.user.text().strip(), auth_proto=auth,
+                                     auth_pass=self.auth_pass.text() if auth else "", priv_proto=priv,
+                                     priv_pass=self.priv_pass.text() if priv else "")
+            expand_targets(self.target_list())
+        except ValueError as e:
+            QMessageBox.warning(self, "SNMP", str(e))
+            return
+        s = self.settings
+        s.setValue("snmp_version", self.creds.version)
+        s.setValue("snmp_user", self.creds.user)
+        s.setValue("snmp_auth_proto", auth)
+        s.setValue("snmp_priv_proto", priv)
+        s.setValue("snmp_targets", self.targets.text().strip())
+        s.setValue("snmp_auto", self.auto.isChecked())
+        s.setValue("snmp_hosts", self.all_hosts.isChecked())
+        super().accept()
+
+    def target_list(self) -> list[str]:
+        return [t.strip() for t in self.targets.text().replace(";", ",").split(",") if t.strip()]
 
 
 class CompareDialog(QDialog):
@@ -221,6 +357,7 @@ class MainWindow(QMainWindow):
         self.worker: ScanWorker | None = None
         self.rescan_worker: ScanWorker | None = None
         self._refresh_pending = False
+        self.snmp_creds = None  # snmp.Credentials, memory only
 
         self._build_toolbar()
         self._build_body()
@@ -316,11 +453,17 @@ class MainWindow(QMainWindow):
         self.switch_cb = check("Switch port (LLDP/CDP)", "switch_info", False,
                                "Wait up to 35 s for the switch to announce itself (name, port, VLAN). "
                                "Needs packet capture rights.")
+        self.snmp_cb = QCheckBox("SNMP")
+        self.snmp_cb.setToolTip("Read switches / routers via SNMP (read-only) to find each device's switch port. "
+                                "Click 'SNMP…' to enter credentials.")
+        self.snmp_btn = QPushButton("SNMP…")
+        self.snmp_btn.clicked.connect(self.edit_snmp)
+        self.snmp_cb.toggled.connect(lambda on: on and self.snmp_creds is None and self.edit_snmp())
         self.netinfo_cb.toggled.connect(lambda on: [w.setEnabled(on) for w in
                                                      (self.internet_cb, self.sweep_cb, self.deep_cb, self.public_ip_cb)])
         checks = QHBoxLayout()
         for cb in (self.netinfo_cb, self.internet_cb, self.sweep_cb, self.deep_cb, self.public_ip_cb,
-                   self.switch_cb):
+                   self.switch_cb, self.snmp_cb, self.snmp_btn):
             checks.addWidget(cb)
         checks.addStretch(1)
         g.addLayout(checks, 2, 1, 1, 7)
@@ -502,6 +645,7 @@ class MainWindow(QMainWindow):
         self.export_csv_act = self._action(f, "Export scan as CSV…", lambda: self.export_scan("csv"))
         self.export_hosts_act = self._action(f, "Export hosts as CSV…", lambda: self.export_scan("hosts"))
         self.export_xlsx_act = self._action(f, "Export scan as Excel…", lambda: self.export_scan("xlsx"))
+        self.report_act = self._action(f, "Create site report…", self.create_report, "Ctrl+P")
         f.addSeparator()
         self.compare_act = self._action(f, "Compare scans…", self.compare_scans, "Ctrl+D")
         f.addSeparator()
@@ -586,6 +730,7 @@ class MainWindow(QMainWindow):
         menu.addAction("Export as CSV…", lambda: self.export_scan("csv"))
         menu.addAction("Export hosts as CSV…", lambda: self.export_scan("hosts"))
         menu.addAction("Export as Excel…", lambda: self.export_scan("xlsx"))
+        menu.addAction("Create site report…", self.create_report)
         menu.addAction("Compare with…", self.compare_scans)
         menu.addSeparator()
         menu.addAction("Delete", self.delete_scan)
@@ -656,6 +801,7 @@ class MainWindow(QMainWindow):
                 f"{s.started_at.replace('T', ' ')[:19]} · {s.level} · {s.status}{routers}")
         has = s is not None and s.id is not None
         for act in (self.export_json_act, self.export_csv_act, self.export_hosts_act, self.export_xlsx_act,
+                    self.report_act,
                     self.edit_info_act, self.delete_act):
             act.setEnabled(has and self.worker is None)
 
@@ -740,6 +886,16 @@ class MainWindow(QMainWindow):
             public_ip=self.public_ip_cb.isChecked(),
             switch_info=self.switch_cb.isChecked(),
         )
+        if self.snmp_cb.isChecked():
+            if self.snmp_creds is None:
+                raise ValueError("SNMP is ticked but no credentials are set (click 'SNMP…')")
+            cfg.snmp_credentials = self.snmp_creds
+            cfg.snmp_targets = [t.strip() for t in str(s.value("snmp_targets", "")).replace(";", ",").split(",")
+                                if t.strip()]
+            cfg.snmp_auto = str(s.value("snmp_auto", True)).lower() == "true"
+            cfg.snmp_hosts = str(s.value("snmp_hosts", False)).lower() == "true"
+            if not cfg.snmp_enabled:
+                raise ValueError("SNMP: no targets (enter targets or tick gateway/switch in 'SNMP…')")
         rng = self.range_edit.text().strip()
         if rng:
             lo, _, hi = rng.partition("-")
@@ -958,6 +1114,39 @@ class MainWindow(QMainWindow):
         else:
             export_json(self.scan, path)
             self.status_label.setText(f"Exported to {path}")
+
+    def edit_snmp(self) -> None:
+        dlg = SnmpDialog(self.settings, self.snmp_creds, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.snmp_creds = dlg.creds
+            self.snmp_cb.setChecked(True)
+            self.snmp_btn.setToolTip(self.snmp_creds.describe())
+        elif self.snmp_creds is None:
+            self.snmp_cb.setChecked(False)
+
+    def create_report(self) -> None:
+        if self._selected_scan_id() is None or self.scan is None:
+            return
+        dlg = ReportDialog(self.settings, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        ext = dlg.format.currentData()
+        name = (self.scan.site or "scan").replace("/", "-") + f"-{self.scan.id}-report.{ext}"
+        start = str(Path(self.settings.value("export_dir", str(Path.home()))) / name)
+        path, _ = QFileDialog.getSaveFileName(self, "Save site report", start, f"{ext.upper()} (*.{ext})")
+        if not path:
+            return
+        self.settings.setValue("export_dir", str(Path(path).parent))
+        from ..storage import report
+        writer = report.write_pdf if ext == "pdf" else report.write_html
+        try:
+            writer(self.scan, path, objects=dlg.objects.isChecked(), author=dlg.author.text().strip())
+        except Exception as e:  # noqa: BLE001 - show, don't crash
+            QMessageBox.warning(self, "Report failed", error_text(e))
+            return
+        self.status_label.setText(f"Report written to {path}")
+        if dlg.open_after.isChecked():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def import_scan(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import scan", str(Path.home()), "bacscan JSON (*.json)")

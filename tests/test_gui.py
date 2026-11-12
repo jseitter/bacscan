@@ -130,6 +130,9 @@ def test_gui_host_details(qapp, tmp_path):
     win = MainWindow(tmp_path / "gui.db", settings)
     try:
         assert hasattr(win, "deep_cb") and not win.deep_cb.isChecked()
+        from bacscan.gui.app import ReportDialog
+        dlg = ReportDialog(settings, win)
+        assert dlg.format.currentData() == "pdf" and win.report_act.text() == "Create site report…"
         h = Host(ip="10.0.0.3", mac="00:11:22:33:44:55", rtt_ms=1.5, ttl=128, os_hint="Windows",
                  kind="Niagara station (Tridium)", ports=[443, 4911], layers=["arp", "icmp", "tcp"],
                  services={"443/tcp https": "200 OK · title Workbench"})
@@ -140,5 +143,33 @@ def test_gui_host_details(qapp, tmp_path):
         assert rows["443/tcp https"] == "200 OK · title Workbench"
         assert rows["Ping"] == "1.5 ms, TTL 128 (Windows)"
         assert ("Deep discovery", "1 host(s) answered; TCP ports checked: 2") in win.env_model.items
+    finally:
+        win.close()
+
+
+def test_gui_snmp_dialog(qapp, tmp_path):
+    from bacscan.gui.app import SnmpDialog
+
+    settings = QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat)
+    win = MainWindow(tmp_path / "gui.db", settings)
+    try:
+        dlg = SnmpDialog(settings, None, win)
+        dlg.version.setCurrentIndex(dlg.version.findData("v3"))
+        assert not dlg.community.isEnabled() and dlg.user.isEnabled()
+        dlg.user.setText("ops")
+        dlg.auth_pass.setText("authpass123")
+        dlg.priv_pass.setText("privpass123")
+        dlg.targets.setText("10.0.0.2, 10.0.0.3")
+        dlg.accept()
+        assert dlg.result() == 1 and dlg.creds.level == "authPriv"
+        # nothing secret ends up in the settings file
+        settings.sync()
+        text = (tmp_path / "s.ini").read_text()
+        assert "authpass123" not in text and "privpass123" not in text and "10.0.0.2" in text
+        win.snmp_creds = dlg.creds
+        win.snmp_cb.setChecked(True)
+        cfg = win.config_from_ui()
+        assert cfg.snmp_targets == ["10.0.0.2", "10.0.0.3"] and cfg.snmp_credentials.user == "ops"
+        assert "authpass123" not in str(cfg.to_dict())
     finally:
         win.close()

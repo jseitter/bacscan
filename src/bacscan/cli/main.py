@@ -16,7 +16,7 @@ from rich.table import Table
 from rich.tree import Tree
 
 from .. import __version__
-from ..core import discover, lldp, netinfo
+from ..core import discover, lldp, netinfo, snmp
 from ..core.listener import Listener
 from ..core import network as netmod
 from ..core.models import Scan
@@ -67,12 +67,36 @@ def _config_from_args(a: argparse.Namespace) -> ScanConfig:
         cfg.internet_checks = False
     cfg.public_ip = getattr(a, "public_ip", False)
     cfg.sweep = getattr(a, "sweep", False)
+    if getattr(a, "snmp", None) or getattr(a, "snmp_auto", False) or getattr(a, "snmp_all_hosts", False):
+        cfg.snmp_credentials = _snmp_creds(a, required=True)
+        cfg.snmp_targets = a.snmp or []
+        cfg.snmp_auto = a.snmp_auto
+        cfg.snmp_hosts = a.snmp_all_hosts
+        cfg.snmp_port = a.snmp_port
+        try:
+            snmp.expand_targets(cfg.snmp_targets)
+        except ValueError as e:
+            raise SystemExit(f"error: --snmp: {e}")
     cfg.deep = getattr(a, "deep", False)
     cfg.deep_ports = _ports(getattr(a, "ports", None))
     cfg.switch_info = getattr(a, "lldp", False)
     if getattr(a, "lldp_wait", None):
         cfg.switch_wait = a.lldp_wait
     return cfg
+
+
+def _snmp_creds(a: argparse.Namespace, required: bool = False) -> "snmp.Credentials | None":
+    community = getattr(a, "community", None)
+    user = getattr(a, "snmp_user", None)
+    import os
+    if not (community or user or os.environ.get("BACSCAN_SNMP_COMMUNITY")):
+        if required:
+            raise SystemExit("error: SNMP needs --community (v2c) or --snmp-user (v3)")
+        return None
+    try:
+        return snmp.Credentials.from_env(community, user, a.auth_proto, a.auth_pass, a.priv_proto, a.priv_pass)
+    except ValueError as e:
+        raise SystemExit(f"error: SNMP: {e}")
 
 
 def _ports(spec: str | None) -> list[int] | None:
@@ -119,7 +143,9 @@ def _hosts_table(hosts, devices=None) -> Table:
     t = Table(title=f"Hosts on the network ({len(hosts)})", header_style="bold")
     t.add_column("IP", no_wrap=True)
     t.add_column("MAC", no_wrap=True)
-    cols = ["Vendor", "Hostname", "BACnet", "Note"] + (["Ping", "Open TCP ports", "Kind"] if deep else [])
+    sw = any(h.switch_port for h in hosts)
+    cols = ["Vendor", "Hostname", "BACnet", "Note"] + (["Ping", "Open TCP ports", "Kind"] if deep else []) + \
+        (["Switch port"] if sw else [])
     for c in cols:
         t.add_column(c, overflow="fold")
     for h in hosts:
@@ -128,6 +154,8 @@ def _hosts_table(hosts, devices=None) -> Table:
         if deep:
             ping = f"{h.rtt_ms:.1f} ms ttl {h.ttl}" if h.rtt_ms is not None else "-"
             row += [ping, " ".join(map(str, h.ports)), h.kind]
+        if sw:
+            row.append(h.switch_port)
         t.add_row(*row)
     return t
 
@@ -271,6 +299,16 @@ def cmd_netinfo(a: argparse.Namespace) -> int:
         if a.lldp:
             console.log(f"waiting up to {a.lldp_wait:.0f} s for LLDP/CDP from the switch…")
             info["switch"] = lldp.capture(iface.name, a.lldp_wait)
+        if a.snmp or a.snmp_auto or a.snmp_all_hosts:
+            creds = _snmp_creds(a, required=True)
+            try:
+                targets = snmp.collect_targets(a.snmp or [], info, hosts, a.snmp_auto, a.snmp_all_hosts, iface.ip)
+            except ValueError as e:
+                raise SystemExit(f"error: --snmp: {e}")
+            console.print(f"[dim]SNMP: querying {len(targets)} agent(s), {creds.describe()}[/dim]")
+            info["snmp"] = snmp.survey(targets, creds, a.snmp_port, emit=lambda m: console.print(f"[dim]{m}[/dim]"),
+                                       source_ip=iface.ip)
+            snmp.apply(info["snmp"], hosts, [])
     if a.json:
         print(json.dumps({"network": info, "hosts": [h.__dict__ for h in hosts]}, indent=2, ensure_ascii=False))
         return 0
@@ -280,6 +318,81 @@ def cmd_netinfo(a: argparse.Namespace) -> int:
     if tree:
         console.print(tree)
     return 0
+
+
+def cmd_snmp(a: argparse.Namespace) -> int:
+    """Standalone read-only SNMP read-out."""
+    creds = _snmp_creds(a, required=True)
+    try:
+        targets = snmp.expand_targets(a.targets)
+    except ValueError as e:
+        err.print(f"[red]error:[/red] {e}")
+        return 1
+    with console.status(f"SNMP: querying {len(targets)} agent(s)…"):
+        if len(targets) == 1:
+            agents = [snmp.read_agent(targets[0], creds, a.snmp_port, not a.system_only, a.timeout)]
+            result = {"credentials": creds.describe(), "agents": agents, "mac_ports": snmp.map_ports(agents)}
+            for ag in agents:
+                ag["fdb_entries"] = len(ag.pop("fdb", []) or [])
+        else:
+            result = snmp.survey(targets, creds, a.snmp_port, not a.system_only)
+    if a.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+        return 0 if any(x.get("ok") for x in result["agents"]) else 2
+    for ag in result["agents"]:
+        _print_agent(ag)
+    if result.get("mac_ports"):
+        t = Table(title="MAC addresses on switch ports", header_style="bold")
+        for c in ("MAC", "Vendor", "Switch", "Port", "VLAN"):
+            t.add_column(c)
+        for mac, p in sorted(result["mac_ports"].items(), key=lambda kv: (kv[1]["switch"], kv[1]["port"])):
+            t.add_row(mac, oui_vendor(mac), p["switch"], p["port"], "" if p.get("vlan") is None else str(p["vlan"]))
+        console.print(t)
+    return 0 if any(x.get("ok") for x in result["agents"]) else 2
+
+
+def oui_vendor(mac: str) -> str:
+    from ..core import oui
+    return oui.vendor(mac)
+
+
+def _print_agent(ag: dict) -> None:
+    if not ag.get("ok"):
+        console.print(f"[red]{ag['ip']}[/red]: {escape(ag.get('error', 'no answer'))}")
+        return
+    rows = [(k, ag.get(k, "")) for k in ("sysName", "sysDescr", "sysLocation", "sysContact", "sysUpTime",
+                                          "sysObjectID")]
+    rows += [(f"entity {k}", v) for k, v in (ag.get("entity") or {}).items()]
+    t = Table(title=f"SNMP {ag['ip']} ({ag['version']})", show_header=False)
+    t.add_column(style="bold")
+    t.add_column(overflow="fold")
+    for k, v in rows:
+        if v:
+            t.add_row(k, escape(str(v)))
+    if ag.get("fdb_entries") is not None and "interfaces" in ag:
+        t.add_row("forwarding table", f"{ag['fdb_entries']} MAC entries")
+    console.print(t)
+    counts = ag.get("port_mac_counts") or {}
+    ifs = [i for i in ag.get("interfaces", []) if i.get("oper") == "up" or i.get("alias")]
+    if ifs:
+        it = Table(title=f"Interfaces up ({len(ifs)} of {len(ag['interfaces'])})", header_style="bold")
+        for c in ("#", "Name", "Alias", "Type", "Speed", "MAC", "MACs learned"):
+            it.add_column(c, overflow="fold", no_wrap=c in ("#", "MAC"))
+        for i in ifs:
+            it.add_row(str(i["index"]), i["name"], i["alias"], i["type"],
+                       f"{i['speed_mbps']} Mb/s" if i.get("speed_mbps") else "", i["mac"],
+                       str(counts.get(i["name"], "")))
+        console.print(it)
+    if ag.get("lldp"):
+        lt = Table(title="LLDP neighbours", header_style="bold")
+        for c in ("Local port", "Neighbour", "Neighbour port", "Chassis"):
+            lt.add_column(c, overflow="fold")
+        for n in ag["lldp"]:
+            lt.add_row(n["local_port"], n["remote_name"], n["remote_port_desc"] or n["remote_port"],
+                       n["remote_chassis"])
+        console.print(lt)
+    if ag.get("ip_addresses"):
+        console.print("IPv4: " + ", ".join(f"{x['ip']}/{x['mask']} ({x['interface']})" for x in ag["ip_addresses"]))
 
 
 def cmd_listen(a: argparse.Namespace) -> int:
@@ -449,6 +562,26 @@ def cmd_scans_show(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_scans_report(a: argparse.Namespace) -> int:
+    from ..core.findings import findings
+    from ..storage import report
+
+    with _open_store(a) as store:
+        scan = _load(a, store, a.scan_id)
+    ext = Path(a.output).suffix.lower()
+    if ext == ".pdf":
+        report.write_pdf(scan, a.output, objects=a.objects, author=a.author)
+    elif ext in (".html", ".htm"):
+        report.write_html(scan, a.output, objects=a.objects, author=a.author)
+    else:
+        err.print("[red]error:[/red] output must end in .html or .pdf")
+        return 1
+    fs = findings(scan)
+    counts = ", ".join(f"{sum(f.severity == s for f in fs)} {s}" for s in ("critical", "warning", "info"))
+    console.print(f"wrote {a.output} ({len(fs)} finding(s): {counts})")
+    return 0
+
+
 def cmd_scans_export(a: argparse.Namespace) -> int:
     with _open_store(a) as store:
         scan = _load(a, store, a.scan_id)
@@ -534,6 +667,26 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--lldp-wait", type=float, default=lldp.DEFAULT_WAIT,
                         help=f"seconds to wait for LLDP/CDP (default {lldp.DEFAULT_WAIT:.0f})")
 
+    def snmp_cred_opts(sp: argparse.ArgumentParser, short: bool = False) -> None:
+        g = sp.add_argument_group("SNMP credentials (read-only; never stored)")
+        g.add_argument(*(["-c"] if short else []), "--community",
+                       help="SNMP v2c community (or env BACSCAN_SNMP_COMMUNITY)")
+        g.add_argument(*(["-u"] if short else []), "--snmp-user", help="SNMP v3 user name")
+        g.add_argument("--auth-proto", default="", choices=["", "MD5", "SHA", "SHA256"],
+                       help="SNMP v3 authentication (default SHA when a password is given)")
+        g.add_argument("--auth-pass", help="SNMP v3 authentication password (or env BACSCAN_SNMP_AUTH)")
+        g.add_argument("--priv-proto", default="", choices=["", "AES"], help="SNMP v3 privacy")
+        g.add_argument("--priv-pass", help="SNMP v3 privacy password (or env BACSCAN_SNMP_PRIV)")
+        g.add_argument("--snmp-port", type=int, default=snmp.DEFAULT_PORT, help="agent UDP port (default 161)")
+
+    def snmp_scan_opts(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument("--snmp", action="append", metavar="TARGET",
+                        help="read SNMP from IP, CIDR or IP-IP (repeatable; needs --community or --snmp-user)")
+        sp.add_argument("--snmp-auto", action="store_true",
+                        help="SNMP: also query the gateway and the switch found via LLDP/CDP")
+        sp.add_argument("--snmp-all-hosts", action="store_true", help="SNMP: also query every host found")
+        snmp_cred_opts(sp)
+
     sp = sub.add_parser("interfaces", help="list network interfaces")
     sp.add_argument("--all", action="store_true", help="include virtual/VPN interfaces")
     sp.add_argument("--json", action="store_true")
@@ -553,14 +706,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-save", action="store_true", help="do not store the scan")
     sp.add_argument("-o", "--output", help="also export to FILE (.json or .csv)")
     survey_opts(sp)
+    snmp_scan_opts(sp)
     sp.add_argument("--no-network-info", action="store_true", help="skip the network environment survey")
     sp.set_defaults(func=cmd_scan)
 
     sp = sub.add_parser("netinfo", help="network environment survey only (DHCP, DNS, gateway, internet, hosts)")
     sp.add_argument("-i", "--interface", help="interface name or IP (default: auto)")
     survey_opts(sp)
+    snmp_scan_opts(sp)
     sp.add_argument("--json", action="store_true")
     sp.set_defaults(func=cmd_netinfo)
+
+    sp = sub.add_parser("snmp", help="read-only SNMP read-out of switches / routers / devices")
+    sp.add_argument("targets", nargs="+", help="IP, CIDR or IP-IP")
+    snmp_cred_opts(sp, short=True)
+    sp.add_argument("--system-only", action="store_true", help="only the system group, no tables")
+    sp.add_argument("--timeout", type=float, default=2.0, help="seconds per request (default 2)")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_snmp)
 
     sp = sub.add_parser("listen", help="passive mode: record BACnet broadcasts without sending anything")
     net_opts(sp)
@@ -594,6 +757,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-o", "--output", required=True)
     sp.add_argument("-f", "--format", choices=("json", "csv", "xlsx", "hosts"))
     sp.set_defaults(func=cmd_scans_export)
+    sp = sc.add_parser("report", help="site report with findings as HTML or PDF")
+    sp.add_argument("scan_id")
+    sp.add_argument("-o", "--output", required=True, help="FILE.html or FILE.pdf")
+    sp.add_argument("--objects", action="store_true", help="append the full object list of every device")
+    sp.add_argument("--author", default="", help="author / company line in the header")
+    sp.set_defaults(func=cmd_scans_report)
     sp = sc.add_parser("diff", help="compare two scans (older first; 'latest' allowed)")
     sp.add_argument("scan_a")
     sp.add_argument("scan_b")

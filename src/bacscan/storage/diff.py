@@ -16,6 +16,7 @@ DEVICE_FIELDS = {
     "location": lambda d: d.text("location"),
     "database revision": lambda d: d.text("database-revision"),
     "ethernet MAC": lambda d: d.eth_mac or "",
+    "switch port": lambda d: d.switch_port or "",
     "object count": lambda d: str(len(d.objects)),
 }
 OBJECT_FIELDS = ["object-name", "description", "units"]
@@ -130,6 +131,8 @@ def diff_scans(a: Scan, b: Scan, values: bool = False) -> ScanDiff:
         for k in set(ha) & set(hb):
             if ha[k].ip != hb[k].ip:
                 d.hosts_changed.append(Change(f"{k} ip", ha[k].ip, hb[k].ip))
+            if ha[k].switch_port and hb[k].switch_port and ha[k].switch_port != hb[k].switch_port:
+                d.hosts_changed.append(Change(f"{hb[k].ip} switch port", ha[k].switch_port, hb[k].switch_port))
             # open ports only compared when both scans ran deep discovery
             if ha[k].layers and hb[k].layers and ha[k].ports != hb[k].ports:
                 d.hosts_changed.append(Change(f"{hb[k].ip} open TCP ports",

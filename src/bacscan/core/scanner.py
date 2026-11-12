@@ -20,7 +20,8 @@ from bacpypes3.pdu import Address
 from bacpypes3.primitivedata import ObjectIdentifier
 
 from .. import __version__
-from . import discover, lldp, netinfo
+from . import discover, lldp, netinfo, snmp
+from .findings import DUPLICATE_PREFIX
 from . import network as netmod
 from .models import BacnetObject, Device, PropValue, Router, Scan, now_iso
 from .values import error_text, is_unknown_property, to_json, to_text
@@ -137,9 +138,22 @@ class ScanConfig:
     switch_wait: float = lldp.DEFAULT_WAIT
     notes: str = ""
     bind_address: str | None = None  # expert/test override, e.g. "127.0.0.1/32:47810"
+    # SNMP read-out (spec §4.9): only runs when credentials are given
+    snmp_credentials: Any = None  # snmp.Credentials - never stored
+    snmp_targets: list[str] = field(default_factory=list)
+    snmp_auto: bool = False  # also the gateway and the LLDP/CDP switch
+    snmp_hosts: bool = False  # also every host found
+    snmp_port: int = 161
 
     def to_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items()}
+        d = {k: v for k, v in self.__dict__.items()}
+        creds = d.pop("snmp_credentials", None)
+        d["snmp"] = creds.describe() if creds else None  # no secrets in the database
+        return d
+
+    @property
+    def snmp_enabled(self) -> bool:
+        return self.snmp_credentials is not None and bool(self.snmp_targets or self.snmp_auto or self.snmp_hosts)
 
 
 @dataclass
@@ -476,11 +490,33 @@ class Scanner:
             rows = dict(lldp.summarize(sw))
             self._emit("network", "switch: " + " · ".join(
                 v for k, v in rows.items() if k in ("Switch", "Switch port", "Switch VLAN")))
+        if self.cfg.snmp_enabled and not self._cancelled:
+            await self._snmp(iface)
         self.scan.finished_at = now_iso()
         n = len(self.scan.devices)
         self._emit("finished", f"{self.scan.status}: {n} device(s), {self.scan.object_count} object(s) "
                                f"in {time.monotonic() - t0:.1f}s")
         return self.scan
+
+    async def _snmp(self, iface: netmod.Interface | None) -> None:
+        cfg = self.cfg
+        try:
+            targets = snmp.collect_targets(cfg.snmp_targets, self.scan.network, self.scan.hosts, cfg.snmp_auto,
+                                           cfg.snmp_hosts, iface.ip if iface else None)
+        except ValueError as e:
+            self._emit("log", f"SNMP skipped: {e}", level=logging.WARNING)
+            return
+        if not targets:
+            self._emit("log", "SNMP: no targets (no gateway / switch address known)", level=logging.WARNING)
+            return
+        self._emit("network", f"SNMP: querying {len(targets)} agent(s), {cfg.snmp_credentials.describe()}")
+        result = await asyncio.to_thread(
+            snmp.survey, targets, cfg.snmp_credentials, cfg.snmp_port, True, 4, lambda: self._cancelled,
+            lambda m: self._emit("network", m), iface.ip if iface and not cfg.bind_address else None)
+        self.scan.network["snmp"] = result
+        n = snmp.apply(result, self.scan.hosts, self.scan.devices)
+        ok = sum(1 for a in result["agents"] if a.get("ok"))
+        self._emit("network", f"SNMP: {ok}/{len(targets)} agent(s) answered, {n} host(s) located on switch ports")
 
     # -- network environment (spec §4.7)
 
@@ -570,7 +606,16 @@ class Scanner:
 
     def _on_iam(self, apdu) -> None:
         instance = apdu.iAmDeviceIdentifier[1]
-        if instance == self._own_instance or self.scan.device(instance):
+        if instance == self._own_instance:
+            return
+        known = self.scan.device(instance)
+        if known:
+            src = str(apdu.pduSource)
+            msg = f"{DUPLICATE_PREFIX} {src}"
+            if src != known.address and msg not in known.errors:
+                known.errors.append(msg)  # two devices share one instance: a real configuration error
+                self._emit("log", f"device instance {instance} also answered from {src} "
+                                  f"(first seen at {known.address})", level=logging.WARNING)
             return
         if self.cfg.low is not None and not (self.cfg.low <= instance <= (self.cfg.high or instance)):
             return
@@ -663,7 +708,7 @@ class Scanner:
                 self._objects_total += len(objids)
                 self._emit("log", f"device {dev.instance}: {len(objids)} object(s)")
                 await self._read_objects(reader, dev, objids)
-            dev.status = "partial" if dev.errors else "done"
+            dev.status = "partial" if any(not e.startswith(DUPLICATE_PREFIX) for e in dev.errors) else "done"
         except ScanCancelled:
             dev.status = "partial"
         except DeviceUnreachable as e:

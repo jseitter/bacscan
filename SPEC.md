@@ -1,6 +1,6 @@
 # bacscan — Specification
 
-Status: **v1.1** (2026-11-12) — M1–M7 implemented — v0.2 approved; v0.3 adds the network environment survey (§4.7, M4)
+Status: **v1.4** (2026-11-12) — M1–M10 implemented — v0.2 approved; v0.3 adds the network environment survey (§4.7, M4)
 
 ## 1. Purpose
 
@@ -147,6 +147,41 @@ Everything is read from the Mac itself or gathered with harmless standard traffi
 
 Results are stored per scan (`network` section in JSON export; separate CSV `hosts` export) and shown in the GUI on a *Network* tab next to the BACnet devices.
 
+### 4.8 Site report (M8)
+A document for the customer or the project file, made from any saved scan.
+
+| ID | Requirement |
+|----|-------------|
+| R1 | **Formats**: one self-contained HTML file (opens in any browser, no external files) and PDF (A4, page numbers). Same content in both. |
+| R2 | **Header**: site, scan date/time, notes, interface and address used, tool version, scan level and options (deep discovery, SNMP, …). Optional author/company line (settings). |
+| R3 | **Summary**: counts (BACnet devices, objects, routers/networks, hosts, open services), internet status, DHCP yes/no. |
+| R4 | **Findings**: rule-based list with severity *info / warning / critical*, each with a short explanation and the affected hosts/devices. Rules (v1): duplicate BACnet device instance; device unreachable or read partly; no / captive / VPN-only internet; gateway not answering; unencrypted management services (Telnet, FTP, HTTP-only web UI, VNC, Niagara Fox 1911, MQTT 1883); unauthenticated control protocols reachable (Modbus 502, S7 102, DNP3, IEC-104, EtherNet/IP, BACnet itself as info); self-signed TLS certificates; SMB/RDP on the building network; SNMP v1/v2c answering (M9). Findings are hints from observation, not a security audit. |
+| R5 | **Sections**: network environment (incl. switch port), BACnet devices (vendor, model, firmware, address, object count, status), routers and remote networks, object count per type per device, hosts with kind/ports, per-host services, SNMP results (M9). |
+| R6 | **Appendix** (optional `--objects`): full object list per device (type, instance, name, present value, units). |
+| R7 | **CLI** `bacscan scans report ID|latest -o FILE.html|FILE.pdf [--objects] [--author TEXT]`; **GUI** *File → Create report…* with the same options. |
+| R8 | Generated offline, no external resources (fonts, scripts, images inline or system). |
+
+### 4.9 SNMP read-out (M9)
+Read-only SNMP queries to switches, routers, UPS, controllers — mainly to learn **which switch port each device is plugged into**.
+
+| ID | Requirement |
+|----|-------------|
+| S1 | **Opt-in, with credentials from the customer**: SNMP v2c community or SNMP v3 user (auth SHA-1/SHA-256, privacy AES-128, or noAuthNoPriv). No guessing of default communities; nothing is tried that the user did not enter. Credentials are **not stored** in the database or exports (only "v2c" / "v3 user X"). |
+| S2 | **Targets**: explicit list (IP, CIDR, range), plus optionally the gateway, the switch from LLDP/CDP, and hosts found by deep discovery. Max 256 targets. |
+| S3 | **Data**: system group (sysDescr, sysObjectID, sysUpTime, sysName, sysContact, sysLocation); interfaces (ifName/ifDescr, ifAlias, type, speed, oper/admin status, MAC); IPv4 addresses; ENTITY-MIB chassis model, serial, firmware; LLDP-MIB neighbours (remote system name, port, management address); bridge forwarding tables (BRIDGE-MIB `dot1dTpFdb` and Q-BRIDGE `dot1qTpFdb`, with VLAN) mapped to interface names. |
+| S4 | **MAC → switch port**: forwarding entries are matched to hosts and BACnet devices by MAC; ports with many MACs (uplinks, > 4 MACs or LLDP neighbour present) are not used for the mapping. Result per host: "switch, port, VLAN". |
+| S5 | **Read-only**: only GET, GETNEXT and GETBULK. **Never SET.** Timeout 2 s, 1 retry, max 4 agents in parallel, max-repetitions 20, walk limit 5,000 varbinds per table. |
+| S6 | **CLI** `bacscan snmp TARGET… [-c COMMUNITY | -u USER --auth-proto … --auth-pass … --priv-pass …]` (standalone, prints result) and `--snmp …` options on `scan`/`netinfo` (stored with the scan); passwords can come from env vars `BACSCAN_SNMP_COMMUNITY`, `BACSCAN_SNMP_AUTH`, `BACSCAN_SNMP_PRIV` so they don't end up in shell history. **GUI**: SNMP settings dialog (credentials kept only in memory for the session), *SNMP* checkbox, results on the Network tab, switch port column in hosts and devices. |
+| S7 | Stored per scan (`network.snmp`), shown in exports (Excel *SNMP* sheet, hosts CSV switch-port column), report section (R5), diff (switch port changed). |
+
+### 4.10 Installer (M10)
+| ID | Requirement |
+|----|-------------|
+| I1 | A macOS **.pkg installer** that installs `bacscan.app` to `/Applications` and the command `bacscan` to `/usr/local/bin` (symlink into the app). |
+| I2 | Uninstall instructions (README) and `bacscan.app/Contents/Resources/uninstall.sh`. |
+| I3 | Built by `scripts/build_pkg.sh` (pkgbuild + productbuild, welcome/readme pages); signs with a *Developer ID Installer* certificate when one is configured (`BACSCAN_INSTALLER_IDENTITY`), notarization steps documented. Unsigned builds work locally (right-click → Open). |
+| I4 | The DMG stays available as the drag-and-drop alternative. |
+
 ## 5. Architecture
 
 ```
@@ -224,6 +259,9 @@ object(id, device_id, object_type, instance, object_name, description, present_v
 5. **M5 — Extras**: XLSX export, diff, passive listen, LLDP/CDP (E10).
 6. **M6 — Delivery**: signed-ready macOS `.app` bundle (PyInstaller), README.
 7. **M7 — Deep host discovery** (E11): CLI `--deep` / `--ports` on `scan` and `netinfo`, GUI *Deep discovery* checkbox and host details pane, stored per host, in hosts CSV / Excel (*Services* sheet), open-port changes in scan diff.
+8. **M8 — Site report** (§4.8): HTML + PDF report with findings, CLI `scans report`, GUI *Create report…*.
+9. **M9 — SNMP read-out** (§4.9): v2c + v3 client (read-only), system/interfaces/entity/LLDP/bridge tables, MAC → switch port mapping, CLI + GUI, stored, exported, in the report.
+10. **M10 — Installer** (§4.10): .pkg with app + `bacscan` command, uninstall script, signing hooks.
 
 ## 10. Implementation status (2026-11-12)
 - **M1 done**: interfaces, discovery (broadcast, unicast targets, instance range), device read-out, SQLite storage, CLI (`interfaces`, `scan`, `read`, `scans list/show/export/import/edit/delete`).
@@ -235,9 +273,21 @@ object(id, device_id, object_type, instance, object_name, description, present_v
 - **M6 done**: `scripts/build_app.sh` builds `bacscan.app` (PyInstaller, ~87 MB, PySide6-Essentials only) and a DMG (~38 MB); one executable for GUI (no arguments) and CLI (with arguments); Info.plist with `NSLocalNetworkUsageDescription`; app icon; ad-hoc signed, Developer ID signing + notarization documented in README.
 - **M7 done**: deep host discovery (E11) in `core/discover.py`: unprivileged ICMP (no root), asyncio TCP connect (64 parallel, 1 s timeout) on hosts that answered on any layer, HTTP/TLS read-out, mDNS legacy-unicast browse, SSDP + UPnP description (only from the answering host, local subnet), NetBIOS NBSTAT. Multicast TTL 1. Tested against localhost (HTTP, TLS, ping) and the local VM bridge (mDNS, ping); not yet on a real building network.
 
+- **M8 done**: `core/findings.py` (rules R4; SNMP rule ready for M9), `storage/report.py` (HTML + PDF via Qt `QTextDocument`/`QPdfWriter`, footer with site and page n of m), CLI `scans report`, GUI *Create site report…* with format/author/appendix options. Duplicate device instances are now recorded during discovery (second I-Am from another address) — previously silently dropped.
+
+- **M9 done**: `core/snmp.py` — own BER/SNMP implementation (no SET anywhere), v2c and v3 USM (HMAC-MD5/SHA-1/SHA-256, AES-128-CFB via `cryptography`, engine discovery, time-window resync, readable USM errors); reads system, IF-MIB, IPv4 addresses, ENTITY-MIB chassis, LLDP-MIB neighbours, BRIDGE/Q-BRIDGE forwarding tables; MAC → port mapping ignoring uplinks (> 4 MACs or LLDP neighbour). CLI `snmp`, `--snmp/--snmp-auto/--snmp-all-hosts` on `scan`/`netinfo`, GUI dialog + columns, Excel sheets, report section, diff of switch ports, finding for v1/v2c. Tested against a local net-snmp agent (v2c, v3 auth, v3 auth+priv, wrong password, unknown user) and RFC 3414 key vectors; forwarding-table mapping only with synthetic data so far (needs a real switch).
+
+- **M10 done**: `scripts/build_pkg.sh` builds `bacscan-<version>.pkg` (~36 MB): component package not relocatable, payload without extended attributes, postinstall links `/usr/local/bin/bacscan` (leaves a non-link file alone), welcome/finish pages, `hostArchitectures` from the built binary (arm64), macOS 13+. `uninstall.sh` in the app's Resources (`--purge` also removes scans/settings). Optional Developer ID signing of app (hardened runtime + entitlements) and installer via env vars — **not tested** (no certificate here). Tested: package structure, postinstall and uninstall against a temporary root, bundled CLI incl. SNMP v3/AES and PDF report. Not tested: an actual install into `/Applications` (needs admin rights).
+
 ## 11. Decisions (answers to open questions, 2026-11-10)
 1. MS/TP: reached via BACnet/IP routers only; no RS-485 adapter support.
 2. Network size: 20–40 devices max per site.
 3. Export formats: JSON + CSV + XLSX.
 4. Strictly read-only, now and later.
 5. Distribution: macOS `.app` bundle.
+
+## 12. Decisions for M8–M10 (2026-11-12, defaults — change here if needed)
+1. Report language: English (same as the tool). A German report can be added later as an option.
+2. PDF is rendered with Qt (already bundled) — no extra dependency; the HTML version can also be printed from a browser.
+3. SNMP v3 encryption (AES) needs the `cryptography` package (adds ~10 MB to the app). SNMP v2c and v3 without privacy work without it.
+4. SNMP credentials are never written to disk by bacscan. No Keychain storage in v1 (re-enter per session; user name, protocols and targets are remembered).

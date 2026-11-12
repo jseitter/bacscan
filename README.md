@@ -9,27 +9,42 @@ See [SPEC.md](SPEC.md) for the full specification.
 ## Install the macOS app
 
 ```sh
-./scripts/build_app.sh          # -> dist/bacscan.app and dist/bacscan-<version>.dmg
+./scripts/build_pkg.sh --rebuild   # -> dist/bacscan-<version>.pkg (+ dist/bacscan.app and a .dmg)
 ```
 
-Copy `bacscan.app` to `/Applications` and double-click it for the GUI. The same app is the
-command line tool:
+Double-click the `.pkg` (or `sudo installer -pkg dist/bacscan-0.1.0.pkg -target /`). It installs
+`bacscan.app` into `/Applications` and the command `bacscan` into `/usr/local/bin`, so both work:
 
 ```sh
-sudo ln -sf /Applications/bacscan.app/Contents/MacOS/bacscan /usr/local/bin/bacscan
-bacscan scan --site "Building A"
+open -a bacscan                     # GUI
+bacscan scan --site "Building A"    # command line
 ```
 
-The build is ad-hoc signed, which is fine on the Mac that built it. Because an ad-hoc signature
-changes with every build, macOS asks again for the firewall / *Local Network* permission after
-each rebuild. To give the app to other Macs, sign it with a Developer ID and notarize it:
+Without the installer: copy `bacscan.app` from the `.dmg` to `/Applications` and link the
+command yourself: `sudo ln -sf /Applications/bacscan.app/Contents/MacOS/bacscan /usr/local/bin/bacscan`.
+
+Uninstall (keeps your saved scans; add `--purge` to delete them and the settings too):
 
 ```sh
-codesign --force --deep --options runtime --sign "Developer ID Application: <name> (<team>)" dist/bacscan.app
-ditto -c -k --keepParent dist/bacscan.app bacscan.zip
-xcrun notarytool submit bacscan.zip --keychain-profile <profile> --wait
-xcrun stapler staple dist/bacscan.app
+sudo /Applications/bacscan.app/Contents/Resources/uninstall.sh
 ```
+
+### Signing for other Macs
+
+Local builds are ad-hoc signed: fine on the Mac that built them, but macOS asks again for the
+firewall / *Local Network* permission after each rebuild, and other Macs need right-click →
+*Open* the first time. For distribution, sign with your Developer ID certificates and notarize:
+
+```sh
+export BACSCAN_APP_IDENTITY="Developer ID Application: <name> (<team>)"
+export BACSCAN_INSTALLER_IDENTITY="Developer ID Installer: <name> (<team>)"
+./scripts/build_pkg.sh --rebuild
+xcrun notarytool submit dist/bacscan-0.1.0.pkg --keychain-profile <profile> --wait
+xcrun stapler staple dist/bacscan-0.1.0.pkg
+```
+
+The app is signed with the hardened runtime and `packaging/entitlements.plist` (needed by the
+embedded Python). Developer ID signing has not been tested yet.
 
 ## Setup (development)
 
@@ -89,6 +104,41 @@ packet-capture rights: run with `sudo`, or install Wireshark (its *ChmodBPF* let
 
 MAC vendors come from a bundled offline list (`src/bacscan/data/oui.tsv.gz`, from Wireshark's
 `manuf`); refresh it with `uv run python scripts/update_oui.py`.
+
+## SNMP (switch ports)
+
+With SNMP credentials from the customer, bacscan reads switches, routers and other agents -
+system info, model/serial, interfaces, LLDP neighbours and the MAC forwarding tables - and
+shows **which switch port every BACnet device and host is plugged into**. Read-only: only
+GET / GETNEXT / GETBULK; v2c, or v3 with SHA/SHA-256/MD5 authentication and AES privacy.
+Credentials are never saved; pass secrets via environment variables to keep them out of
+your shell history.
+
+```sh
+uv run bacscan snmp 10.0.0.2 -c COMMUNITY                       # one switch, all tables
+export BACSCAN_SNMP_AUTH=… BACSCAN_SNMP_PRIV=…
+uv run bacscan snmp 10.0.0.0/28 -u monitor --auth-proto SHA --priv-proto AES
+uv run bacscan scan --snmp 10.0.0.2 --snmp-auto -u monitor     # with the scan: + gateway + LLDP switch
+uv run bacscan netinfo --deep --snmp-auto --community COMMUNITY
+```
+
+GUI: tick *SNMP* and enter credentials and targets in *SNMP…*; the switch port appears in the
+device and host tables, the agents on the *Network* tab, in Excel (*SNMP* sheets) and the report.
+
+## Site report
+
+A report for the customer or the project file, made from any saved scan: summary, findings
+(duplicate device instances, unreadable devices, Telnet/FTP/HTTP-only web interfaces, open
+Modbus/S7, Niagara Fox without TLS, self-signed certificates, internet/gateway problems …),
+network environment, BACnet devices, routers, object counts, hosts and services.
+Findings are hints from what the scan saw, not a security audit.
+
+```sh
+uv run bacscan scans report latest -o site.pdf                 # A4 PDF with page numbers
+uv run bacscan scans report 12 -o site.html --objects --author "Name, Company"
+```
+
+GUI: *File → Create site report…* (Ctrl+P).
 
 ## Listen mode, comparing scans, Excel
 
