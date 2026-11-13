@@ -53,6 +53,7 @@ from ..storage.db import Store
 from ..storage.diff import diff_lines, diff_scans
 from ..storage.export import export_csv, export_hosts_csv, export_json, import_json
 from ..storage.xlsx import export_xlsx
+from .progress import ScanProgressDialog
 from .models import DeviceModel, FilterProxy, HostModel, ObjectModel, PropertyModel, TrafficModel
 from .worker import ScanWorker
 
@@ -384,6 +385,7 @@ class MainWindow(QMainWindow):
         self.rescan_worker: ScanWorker | None = None
         self._refresh_pending = False
         self.snmp_creds = None  # snmp.Credentials, memory only
+        self.progress_dlg: ScanProgressDialog | None = None
 
         self._build_toolbar()
         self._build_body()
@@ -1056,6 +1058,13 @@ class MainWindow(QMainWindow):
         self._set_busy(True)
         self.status_label.setText("Listening (nothing is sent)…" if listen_seconds is not None
                                   else "Discovering devices…")
+        if self.progress_dlg is not None:
+            self.progress_dlg.deleteLater()
+        self.progress_dlg = ScanProgressDialog(
+            "Listening" if listen_seconds is not None else f"Scanning ({cfg.level})", self)
+        self.progress_dlg.stop_requested.connect(self.stop_scan)
+        self.worker.event.connect(self.progress_dlg.on_event)
+        self.progress_dlg.show()
         self.worker.start()
 
     def stop_scan(self) -> None:
@@ -1065,10 +1074,14 @@ class MainWindow(QMainWindow):
             self.stop_btn.setEnabled(False)
 
     def _on_event(self, e: ScanEvent) -> None:
-        if e.kind == "network":
+        if e.kind in ("network", "snmp"):
             self.show_network()
-        if e.kind in ("log", "routers", "finished", "network") and e.message:
+        if e.kind in ("log", "routers", "finished", "network", "snmp", "phase") and e.message:
             self.log_view.appendPlainText(e.message)
+        if e.kind == "phase":
+            self.status_label.setText(e.message + "…")
+        elif e.kind == "snmp" and e.total:
+            self.status_label.setText(f"SNMP: {e.done}/{e.total} agent(s)")
         if e.kind == "device_found":
             self.log_view.appendPlainText(e.message)
             self.status_label.setText(f"Discovering… {len(self.scan.devices) if self.scan else 0} device(s) found")
@@ -1121,13 +1134,17 @@ class MainWindow(QMainWindow):
         n = len(scan.devices)
         self.status_label.setText(
             f"Scan {scan.status}: {n} device(s), {scan.object_count} object(s) — saved as scan {scan.id}")
+        summary = self.status_label.text()
         if scan.level == "listen":
             heard = len(scan.network.get("bacnet_traffic", []))
             self.status_label.setText(f"Listen {scan.status}: {heard} traffic source/service pair(s), "
                                       f"{n} device(s) — saved as scan {scan.id}")
             if heard:
                 self.tabs.setCurrentIndex(1)
-        elif n == 0 and scan.status == "completed":
+            summary = self.status_label.text()
+        if self.progress_dlg is not None:
+            self.progress_dlg.finish(scan, summary)
+        if scan.level != "listen" and n == 0 and scan.status == "completed":
             QMessageBox.information(
                 self, "No devices found",
                 "No BACnet device answered.\n\nCheck: correct interface and cable, macOS firewall "
@@ -1137,6 +1154,8 @@ class MainWindow(QMainWindow):
         self.worker = None
         self._set_busy(False)
         self.status_label.setText("Scan failed")
+        if self.progress_dlg is not None:
+            self.progress_dlg.fail(message)
         self.log_view.appendPlainText(f"ERROR: {message}")
         QMessageBox.critical(self, "Scan failed", message)
 

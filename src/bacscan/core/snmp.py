@@ -704,7 +704,7 @@ def expand_targets(specs: Iterable[str]) -> list[str]:
 
 def survey(targets: list[str], creds: Credentials, port: int = DEFAULT_PORT, tables: bool = True,
            parallel: int = 4, should_stop: Callable[[], bool] = lambda: False,
-           emit: Callable[[str], None] = lambda m: None, source_ip: str | None = None) -> dict:
+           emit: Callable[[dict], None] = lambda a: None, source_ip: str | None = None) -> dict:
     """S2-S5: query all targets (max 4 at a time); returns the network['snmp'] structure."""
     from concurrent.futures import ThreadPoolExecutor
 
@@ -716,8 +716,7 @@ def survey(targets: list[str], creds: Credentials, port: int = DEFAULT_PORT, tab
         for f in futures:
             a = f.result()
             agents.append(a)
-            if a.get("ok"):
-                emit(f"SNMP {a['ip']}: {a.get('sysName') or '?'} - {a.get('sysDescr', '')[:60]}")
+            emit(a)
     mac_ports = map_ports(agents)
     for a in agents:
         a["fdb_entries"] = len(a.pop("fdb", []) or [])

@@ -158,7 +158,7 @@ class ScanConfig:
 
 @dataclass
 class ScanEvent:
-    kind: str  # log | device_found | device_updated | progress | routers | network | finished
+    kind: str  # log | phase | device_found | device_updated | progress | snmp | routers | network | finished
     message: str = ""
     device: Device | None = None
     done: int = 0
@@ -466,11 +466,13 @@ class Scanner:
                 netinfo.survey_environment, iface, self.cfg.internet_checks, self.cfg.public_ip))
         try:
             await asyncio.sleep(0.5)  # let the UDP endpoints come up
+            self._emit("phase", "Discovering BACnet devices")
             if self.cfg.bbmd:
                 self._emit("log", f"registering as foreign device with BBMD {self.cfg.bbmd}")
                 await asyncio.sleep(2)
             await self._discover(app)
             if self.cfg.level != "discover" and self.scan.devices and not self._cancelled:
+                self._emit("phase", f"Reading {len(self.scan.devices)} device(s)")
                 await self._read_devices(app)
             self.scan.status = "cancelled" if self._cancelled else "completed"
         except ScanCancelled:
@@ -482,8 +484,10 @@ class Scanner:
         finally:
             app.close()
         if iface is not None and self.cfg.network_info:
+            self._emit("phase", "Surveying the network (hosts, services)")
             await self._network_survey(iface, env_task)
         if switch_task is not None:
+            self._emit("phase", "Waiting for LLDP/CDP announcement from the switch")
             self._emit("log", "waiting for LLDP/CDP announcement from the switch…")
             sw = await switch_task
             self.scan.network["switch"] = sw
@@ -509,10 +513,23 @@ class Scanner:
         if not targets:
             self._emit("log", "SNMP: no targets (no gateway / switch address known)", level=logging.WARNING)
             return
-        self._emit("network", f"SNMP: querying {len(targets)} agent(s), {cfg.snmp_credentials.describe()}")
+        self._emit("phase", f"SNMP read-out of {len(targets)} agent(s)")
+        self._emit("snmp", f"SNMP: querying {len(targets)} agent(s), {cfg.snmp_credentials.describe()}",
+                   done=0, total=len(targets))
+        finished = 0
+
+        def agent_done(agent: dict) -> None:
+            nonlocal finished
+            finished += 1
+            if agent.get("ok"):
+                msg = f"SNMP {agent['ip']}: {agent.get('sysName') or '?'} - {agent.get('sysDescr', '')[:60]}"
+            else:
+                msg = f"SNMP {agent['ip']}: no result ({agent.get('error') or 'no answer'})"
+            self._emit("snmp", msg, done=finished, total=len(targets))
+
         result = await asyncio.to_thread(
             snmp.survey, targets, cfg.snmp_credentials, cfg.snmp_port, True, 4, lambda: self._cancelled,
-            lambda m: self._emit("network", m), iface.ip if iface and not cfg.bind_address else None)
+            agent_done, iface.ip if iface and not cfg.bind_address else None)
         self.scan.network["snmp"] = result
         n = snmp.apply(result, self.scan.hosts, self.scan.devices)
         ok = sum(1 for a in result["agents"] if a.get("ok"))

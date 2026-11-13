@@ -306,8 +306,13 @@ def cmd_netinfo(a: argparse.Namespace) -> int:
             except ValueError as e:
                 raise SystemExit(f"error: --snmp: {e}")
             console.print(f"[dim]SNMP: querying {len(targets)} agent(s), {creds.describe()}[/dim]")
-            info["snmp"] = snmp.survey(targets, creds, a.snmp_port, emit=lambda m: console.print(f"[dim]{m}[/dim]"),
-                                       source_ip=iface.ip)
+            def show_agent(ag: dict) -> None:
+                if ag.get("ok"):
+                    console.print(f"[dim]SNMP {ag['ip']}: {ag.get('sysName') or '?'} - {ag.get('sysDescr', '')[:60]}[/dim]")
+                else:
+                    console.print(f"[dim]SNMP {ag['ip']}: no result ({ag.get('error') or 'no answer'})[/dim]")
+
+            info["snmp"] = snmp.survey(targets, creds, a.snmp_port, emit=show_agent, source_ip=iface.ip)
             snmp.apply(info["snmp"], hosts, [])
     if a.json:
         print(json.dumps({"network": info, "hosts": [h.__dict__ for h in hosts]}, indent=2, ensure_ascii=False))

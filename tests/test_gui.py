@@ -67,7 +67,11 @@ def test_gui_scan(qapp, tmp_path, port_pair):
                          internet_checks=False)
         win.start_scan(cfg)
         assert win.worker is not None and not win.scan_btn.isEnabled()
+        dlg = win.progress_dlg
+        assert dlg is not None and dlg.isVisible()
         assert wait_until(lambda: win.worker is None), "scan did not finish"
+        assert dlg.finished_ok and not dlg.stop_btn.isEnabled()
+        assert "== Discovering BACnet devices" in dlg.log.toPlainText()
         assert win.scan.id is not None and win.scan.status == "completed"
         assert len(win.history_items()) == 1
         assert win.device_model.rowCount() == 1
@@ -234,3 +238,23 @@ def test_gui_site_tree(qapp, tmp_path):
         assert older.site == "Plant A" and older.started_at.startswith("2026-11-05")
     finally:
         win.close()
+
+
+def test_progress_dialog_snmp_results(qapp):
+    from sample_scan import sample_scan
+    from bacscan.core.scanner import ScanEvent
+    from bacscan.gui.progress import ScanProgressDialog, snmp_rows
+
+    scan = sample_scan()
+    rows = snmp_rows(scan.network["snmp"])
+    assert rows[0][:3] == ["10.20.0.2", "answered", "sw-plant-01"] and "14 MAC table entries" in rows[0][4]
+    assert rows[1] == ["10.20.0.1", "no result", "", "", "no answer"]
+
+    dlg = ScanProgressDialog("t")
+    dlg.on_event(ScanEvent(kind="phase", message="SNMP read-out of 2 agent(s)"))
+    dlg.on_event(ScanEvent(kind="snmp", message="SNMP 10.20.0.1: no result (no answer)", done=1, total=2))
+    assert dlg.bar.maximum() == 2 and dlg.bar.value() == 1
+    assert "no result" in dlg.log.toPlainText()
+    dlg.finish(scan, "done")
+    assert dlg.snmp_table.rowCount() == 2 and not dlg.snmp_table.isHidden()
+    assert "1 of 2" in dlg.snmp_label.text()
