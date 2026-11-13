@@ -201,8 +201,21 @@ def test_gui_site_tree(qapp, tmp_path):
         h.setCurrentItem(a)  # a site node does not change the shown scan
         assert win.scan.started_at.startswith("2026-11-05")
 
+        # the site dropdown lists known sites (most recent first); selecting fills in the site of the next scan
+        box = win.site_edit
+        assert [box.itemText(i) for i in range(box.count())] == ["Plant A", "Plant B"]
+        h.setCurrentItem(h.topLevelItem(1).child(0))
+        assert box.currentText() == "Plant B"
+        h.setCurrentItem(h.topLevelItem(2).child(0))  # (no site)
+        assert box.currentText() == ""
+        h.setCurrentItem(h.topLevelItem(0))
+        assert box.currentText() == "Plant A"
+        box.setEditText("New building")
+        win.reload_history()  # refilling the list keeps what was typed
+        assert box.currentText() == "New building"
+
         # collapse state survives a reload; the selected scan's site is always opened
-        a.setExpanded(False)
+        h.topLevelItem(0).setExpanded(False)
         win.reload_history()
         assert not h.topLevelItem(0).isExpanded() and h.topLevelItem(1).isExpanded()
         win.reload_history(select_id=h.topLevelItem(0).child(0).data(0, 256))

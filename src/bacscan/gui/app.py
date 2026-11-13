@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDialog,
     QDialogButtonBox,
     QDockWidget,
@@ -106,14 +107,38 @@ class SettingsDialog(QDialog):
         super().accept()
 
 
+def site_box(sites: list[str], text: str = "") -> QComboBox:
+    """Editable dropdown of the known sites: pick one or type a new name (matches anywhere in the name)."""
+    box = QComboBox()
+    box.setEditable(True)
+    box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+    box.setMinimumContentsLength(16)
+    box.lineEdit().setPlaceholderText("Site / building name")
+    box.completer().setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+    box.completer().setFilterMode(Qt.MatchFlag.MatchContains)
+    set_sites(box, sites)
+    box.setEditText(text)
+    return box
+
+
+def set_sites(box: QComboBox, sites: list[str]) -> None:
+    """Replace the dropdown entries, keeping what is typed in the field."""
+    text = box.currentText()
+    box.blockSignals(True)
+    box.clear()
+    box.addItems(sites)
+    box.setEditText(text)
+    box.blockSignals(False)
+
+
 class ScanInfoDialog(QDialog):
     """Edit site name and notes of a scan."""
 
-    def __init__(self, site: str, notes: str, parent=None):
+    def __init__(self, site: str, notes: str, sites: list[str] = (), parent=None):
         super().__init__(parent)
         self.setWindowTitle("Scan details")
         form = QFormLayout(self)
-        self.site = QLineEdit(site)
+        self.site = site_box(list(sites), site)
         self.notes = QPlainTextEdit(notes)
         self.notes.setMinimumHeight(120)
         form.addRow("Site", self.site)
@@ -390,7 +415,9 @@ class MainWindow(QMainWindow):
         self.port_spin.setMaximumWidth(90)
         self.wait_spin.setMaximumWidth(90)
 
-        self.site_edit = QLineEdit(placeholderText="Site / building name")
+        self.site_edit = site_box([])
+        self.site_edit.setToolTip("Site of the next scan: pick a known site or type a new one.\n"
+                                  "Selecting a scan or site on the left fills it in.")
         self.targets_edit = QLineEdit(placeholderText="optional: unicast targets, e.g. 10.1.2.0/24, 10.1.3.5")
         self.targets_edit.setToolTip("Who-Is is also sent directly to these addresses (when broadcasts are blocked)")
         self.bbmd_edit = QLineEdit(placeholderText="optional: BBMD ip[:port]")
@@ -720,6 +747,8 @@ class MainWindow(QMainWindow):
         for s in self.store.list():  # newest first
             groups.setdefault(s.site or "", []).append(s)
         order = [k for k in groups if k] + ([""] if "" in groups else [])
+        self.sites = [k for k in order if k]
+        set_sites(self.site_edit, self.sites)
         collapsed = self._collapsed_sites()
         self.history.blockSignals(True)
         self.history.clear()
@@ -766,6 +795,10 @@ class MainWindow(QMainWindow):
         sid = item.data(0, Qt.ItemDataRole.UserRole)
         if sid is not None:
             self.show_scan(self.store.load(sid))
+            site = self.scan.site if self.scan else ""
+        else:
+            site = item.data(0, self.SITE_ROLE)
+        self.site_edit.setEditText(site or "")  # the next scan goes to the same site
 
     def _history_double_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
         if item.data(0, Qt.ItemDataRole.UserRole) is not None:
@@ -947,7 +980,7 @@ class MainWindow(QMainWindow):
             port=self.port_spin.value(),
             level=self.level_combo.currentData(),
             whois_timeout=self.wait_spin.value(),
-            site=self.site_edit.text().strip(),
+            site=self.site_edit.currentText().strip(),
             bbmd=self.bbmd_edit.text().strip() or None,
             targets=[t.strip() for t in self.targets_edit.text().replace(";", ",").split(",") if t.strip()],
             apdu_timeout=float(s.value("apdu_timeout", 3.0)),
@@ -1241,9 +1274,9 @@ class MainWindow(QMainWindow):
         sid = self._selected_scan_id()
         if sid is None or self.worker is not None:
             return
-        dlg = ScanInfoDialog(self.scan.site, self.scan.notes, self)
+        dlg = ScanInfoDialog(self.scan.site, self.scan.notes, self.sites, self)
         if dlg.exec():
-            self.scan.site = dlg.site.text().strip()
+            self.scan.site = dlg.site.currentText().strip()
             self.scan.notes = dlg.notes.toPlainText()
             self.store.update_meta(sid, site=self.scan.site, notes=self.scan.notes)
             self.reload_history(select_id=sid)
