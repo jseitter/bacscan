@@ -214,3 +214,14 @@ uv run pytest
 
 Tests run a simulated BACnet device on the loopback interface; no network access needed.
 `uv run python tests/sim_device.py` starts the simulator by hand.
+
+## Responsible use
+
+bacscan only reads (no BACnet writes, no SNMP SET). Port scanning, host discovery and
+SNMP queries can still disturb fragile building-automation equipment and may be
+prohibited on networks you do not own. Use it only on networks you are authorized to test.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Third-party components, including the LGPL-3.0 Qt/PySide6
+bundled in the macOS app, are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

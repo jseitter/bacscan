@@ -3,6 +3,8 @@ name = "bacscan"
 version = "0.1.0"
 description = "Read-only BACnet/IP discovery and inventory tool"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Joerg Seitter", email = "jseitter@users.noreply.github.com" }
 ]
