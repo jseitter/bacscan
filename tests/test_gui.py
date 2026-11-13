@@ -69,7 +69,7 @@ def test_gui_scan(qapp, tmp_path, port_pair):
         assert win.worker is not None and not win.scan_btn.isEnabled()
         assert wait_until(lambda: win.worker is None), "scan did not finish"
         assert win.scan.id is not None and win.scan.status == "completed"
-        assert win.history.count() == 1
+        assert len(win.history_items()) == 1
         assert win.device_model.rowCount() == 1
         win.device_view.selectRow(0)
         assert win.object_model.rowCount() == 9
@@ -106,7 +106,7 @@ def test_gui_scan(qapp, tmp_path, port_pair):
         cfg2 = ScanConfig(bind_address=f"127.0.0.1/32:{scan_port}", network_info=False)
         win.start_scan(cfg2, listen_seconds=1)
         assert wait_until(lambda: win.worker is None), "listen did not finish"
-        assert win.scan.level == "listen" and win.history.count() == 2
+        assert win.scan.level == "listen" and len(win.history_items()) == 2
         from bacscan.gui.app import CompareDialog
         dlg = CompareDialog(win.store, win.scan.id)
         assert dlg.tree.topLevelItemCount() > 0 and "removed" in dlg.summary.text()
@@ -115,8 +115,10 @@ def test_gui_scan(qapp, tmp_path, port_pair):
 
         # reload from history
         win.show_scan(None)
-        win.history.setCurrentRow(-1)
-        win.history.setCurrentRow(1)  # newest first: row 0 is the listen result
+        # site "GUI test" holds the first scan; the listen scan has no site and sits in the last node
+        assert win.history.topLevelItem(0).data(0, win.SITE_ROLE) == "GUI test"
+        win.history.setCurrentItem(win.history_items()[1])
+        win.history.setCurrentItem(win.history_items()[0])
         assert win.scan.id == sid and win.device_model.rowCount() == 1
     finally:
         win.close()
@@ -171,5 +173,51 @@ def test_gui_snmp_dialog(qapp, tmp_path):
         cfg = win.config_from_ui()
         assert cfg.snmp_targets == ["10.0.0.2", "10.0.0.3"] and cfg.snmp_credentials.user == "ops"
         assert "authpass123" not in str(cfg.to_dict())
+    finally:
+        win.close()
+
+
+def test_gui_site_tree(qapp, tmp_path):
+    from bacscan.core.models import Scan
+    from bacscan.storage.db import Store
+    db = tmp_path / "gui.db"
+    with Store(db) as st:
+        for when, site in [("2026-11-01T10:00", "Plant A"), ("2026-11-03T10:00", "Plant B"),
+                           ("2026-11-05T10:00", "Plant A"), ("2026-11-06T10:00", ""),
+                           ("2026-11-07T09:00", "Plant A")]:
+            st.save(Scan(started_at=when, site=site, status="completed"))
+    settings = QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat)
+    win = MainWindow(db, settings)
+    try:
+        h = win.history
+        sites = [h.topLevelItem(i).data(0, win.SITE_ROLE) for i in range(h.topLevelItemCount())]
+        assert sites == ["Plant A", "Plant B", ""]  # most recent site first, no site last
+        a = h.topLevelItem(0)
+        assert a.text(0) == "Plant A  (3)"
+        assert [a.child(i).text(0)[:16] for i in range(3)] == ["2026-11-07 09:00", "2026-11-05 10:00",
+                                                                "2026-11-01 10:00"]
+        h.setCurrentItem(a.child(1))
+        assert win.scan.started_at.startswith("2026-11-05")
+        h.setCurrentItem(a)  # a site node does not change the shown scan
+        assert win.scan.started_at.startswith("2026-11-05")
+
+        # collapse state survives a reload; the selected scan's site is always opened
+        a.setExpanded(False)
+        win.reload_history()
+        assert not h.topLevelItem(0).isExpanded() and h.topLevelItem(1).isExpanded()
+        win.reload_history(select_id=h.topLevelItem(0).child(0).data(0, 256))
+        assert h.topLevelItem(0).isExpanded()
+
+        # rename merges into an existing site
+        win.store.rename_site("Plant B", "Plant A")
+        win.reload_history()
+        assert h.topLevelItem(0).text(0) == "Plant A  (4)" and h.topLevelItemCount() == 2
+
+        # compare defaults to the previous scan of the same site
+        from bacscan.gui.app import CompareDialog
+        newest = h.topLevelItem(0).child(0).data(0, 256)
+        dlg = CompareDialog(win.store, newest)
+        older = win.store.load(dlg.a_combo.currentData())
+        assert older.site == "Plant A" and older.started_at.startswith("2026-11-05")
     finally:
         win.close()

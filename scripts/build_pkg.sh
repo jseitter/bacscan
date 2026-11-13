@@ -28,6 +28,8 @@ cat > "$WORK/distribution.xml" <<XML
     <title>bacscan $VERSION</title>
     <welcome file="welcome.html" mime-type="text/html"/>
     <conclusion file="conclusion.html" mime-type="text/html"/>
+    <background file="background.png" alignment="bottomleft" scaling="proportional" mime-type="image/png"/>
+    <background-darkAqua file="background.png" alignment="bottomleft" scaling="proportional" mime-type="image/png"/>
     <options customize="never" require-scripts="false" hostArchitectures="$ARCH"/>
     <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
     <allowed-os-versions><os-version min="13.0"/></allowed-os-versions>

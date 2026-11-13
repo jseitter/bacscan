@@ -1,12 +1,13 @@
 """bacscan desktop GUI (PySide6)."""
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QGuiApplication, QKeySequence
+from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QGuiApplication, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -24,8 +25,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -281,7 +280,9 @@ class CompareDialog(QDialog):
         ids = [s.id for s in scans]
         b = ids.index(current_id) if current_id in ids else 0
         self.b_combo.setCurrentIndex(b)
-        self.a_combo.setCurrentIndex(min(b + 1, len(ids) - 1) if ids else 0)  # list is newest first
+        # older default: the previous scan of the same site, else simply the previous scan (list is newest first)
+        same = [i for i in range(b + 1, len(scans)) if scans[b].site and scans[i].site == scans[b].site] if ids else []
+        self.a_combo.setCurrentIndex(same[0] if same else min(b + 1, len(ids) - 1) if ids else 0)
         self.values_cb = QCheckBox("Include present values")
         go = QPushButton("Compare")
         go.clicked.connect(self.compare)
@@ -480,11 +481,16 @@ class MainWindow(QMainWindow):
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 0, 0)
         lv.addWidget(QLabel("<b>Saved scans</b>"))
-        self.history = QListWidget()
+        # one node per site, its scans newest first
+        self.history = QTreeWidget()
+        self.history.setHeaderHidden(True)
+        self.history.setIndentation(14)
         self.history.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.history.customContextMenuRequested.connect(self._history_menu)
         self.history.currentItemChanged.connect(self._history_selected)
-        self.history.itemDoubleClicked.connect(lambda _i: self.edit_scan_info())
+        self.history.itemDoubleClicked.connect(self._history_double_clicked)
+        self.history.itemExpanded.connect(lambda it: self._site_toggled(it, True))
+        self.history.itemCollapsed.connect(lambda it: self._site_toggled(it, False))
         lv.addWidget(self.history)
 
         # right: devices / objects / properties
@@ -700,31 +706,90 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ history
 
+    SITE_ROLE = Qt.ItemDataRole.UserRole + 1  # site name on site nodes; scan nodes carry the scan id
+
+    def _collapsed_sites(self) -> set[str]:
+        try:
+            return set(json.loads(self.settings.value("history/collapsed", "[]") or "[]"))
+        except (TypeError, ValueError):
+            return set()
+
     def reload_history(self, select_id: int | None = None) -> None:
+        """Rebuild the tree: sites with the most recent scan first, "(no site)" last; newest scan on top."""
+        groups: dict[str, list] = {}
+        for s in self.store.list():  # newest first
+            groups.setdefault(s.site or "", []).append(s)
+        order = [k for k in groups if k] + ([""] if "" in groups else [])
+        collapsed = self._collapsed_sites()
         self.history.blockSignals(True)
         self.history.clear()
-        for s in self.store.list():
-            when = s.started_at.replace("T", " ")[:16]
-            item = QListWidgetItem(f"{when}\n{s.site or '(no site)'} · {s.devices} dev · {s.objects} obj"
-                                   + ("" if s.status == "completed" else f" · {s.status}"))
-            item.setData(Qt.ItemDataRole.UserRole, s.id)
-            item.setToolTip(f"Scan {s.id} · level {s.level}\n{s.interface}\n{s.notes}")
-            self.history.addItem(item)
-            if s.id == select_id:
-                self.history.setCurrentItem(item)
+        bold = self.history.font()
+        bold.setBold(True)
+        for site in order:
+            scans = groups[site]
+            node = QTreeWidgetItem(self.history, [f"{site or '(no site)'}  ({len(scans)})"])
+            node.setData(0, self.SITE_ROLE, site)
+            node.setFont(0, bold)
+            node.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            node.setToolTip(0, f"{len(scans)} scan{'s' if len(scans) != 1 else ''}, "
+                               f"latest {scans[0].started_at.replace('T', ' ')[:16]}")
+            for s in scans:
+                when = s.started_at.replace("T", " ")[:16]
+                text = f"{when} · {s.devices} dev"
+                if s.status != "completed":
+                    text += f" · {s.status}"
+                item = QTreeWidgetItem(node, [text])
+                item.setData(0, Qt.ItemDataRole.UserRole, s.id)
+                item.setToolTip(0, f"Scan {s.id} · level {s.level} · {s.devices} devices, {s.objects} objects\n{s.interface}\n{s.notes}".rstrip())
+                if s.id == select_id:
+                    self.history.setCurrentItem(item)
+            node.setExpanded(site not in collapsed or any(
+                node.child(i).data(0, Qt.ItemDataRole.UserRole) == select_id for i in range(node.childCount())))
         self.history.blockSignals(False)
 
-    def _history_selected(self, item: QListWidgetItem | None, _prev=None) -> None:
+    def history_items(self) -> list[QTreeWidgetItem]:
+        """All scan nodes in display order."""
+        return [self.history.topLevelItem(i).child(j) for i in range(self.history.topLevelItemCount())
+                for j in range(self.history.topLevelItem(i).childCount())]
+
+    def _site_toggled(self, node: QTreeWidgetItem, expanded: bool) -> None:
+        if self.history.signalsBlocked():
+            return
+        collapsed = self._collapsed_sites()
+        site = node.data(0, self.SITE_ROLE)
+        (collapsed.discard if expanded else collapsed.add)(site)
+        self.settings.setValue("history/collapsed", json.dumps(sorted(collapsed)))
+
+    def _history_selected(self, item: QTreeWidgetItem | None, _prev=None) -> None:
         if item is None or self.worker is not None:
             return
-        self.show_scan(self.store.load(item.data(Qt.ItemDataRole.UserRole)))
+        sid = item.data(0, Qt.ItemDataRole.UserRole)
+        if sid is not None:
+            self.show_scan(self.store.load(sid))
+
+    def _history_double_clicked(self, item: QTreeWidgetItem, _col: int) -> None:
+        if item.data(0, Qt.ItemDataRole.UserRole) is not None:
+            self.edit_scan_info()  # site nodes just expand / collapse
 
     def _history_menu(self, pos) -> None:
         item = self.history.itemAt(pos)
         if not item:
             return
-        self.history.setCurrentItem(item)
         menu = QMenu(self)
+        if item.data(0, Qt.ItemDataRole.UserRole) is None:  # site node
+            site = item.data(0, self.SITE_ROLE)
+            newest = item.child(0).data(0, Qt.ItemDataRole.UserRole)
+            if site:
+                menu.addAction("Rename site…", lambda: self.rename_site(site))
+            act = menu.addAction("Compare newest two scans",
+                                 lambda: CompareDialog(self.store, newest, self).exec())
+            act.setEnabled(item.childCount() >= 2)
+            menu.addSeparator()
+            menu.addAction("Expand all", self.history.expandAll)
+            menu.addAction("Collapse all", self.history.collapseAll)
+            menu.exec(self.history.mapToGlobal(pos))
+            return
+        self.history.setCurrentItem(item)
         menu.addAction("Edit site / notes…", self.edit_scan_info)
         menu.addAction("Export as JSON…", lambda: self.export_scan("json"))
         menu.addAction("Export as CSV…", lambda: self.export_scan("csv"))
@@ -735,6 +800,17 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction("Delete", self.delete_scan)
         menu.exec(self.history.mapToGlobal(pos))
+
+    def rename_site(self, old: str) -> None:
+        new, ok = QInputDialog.getText(self, "Rename site", f"New name for all scans of “{old}”:", text=old)
+        new = new.strip()
+        if not ok or not new or new == old:
+            return
+        self.store.rename_site(old, new)
+        if self.scan and self.scan.site == old:
+            self.scan.site = new
+            self._update_titles()
+        self.reload_history(select_id=self._selected_scan_id())
 
     # ------------------------------------------------------------ display
 
@@ -1212,6 +1288,7 @@ def main(db_path: str | None = None) -> int:
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("bacscan")
     app.setOrganizationName("bacscan")
+    app.setWindowIcon(QIcon(str(Path(__file__).with_name("icon.png"))))  # Dock icon when run from source
     win = MainWindow(db_path)
     win.show()
     return app.exec()

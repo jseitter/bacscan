@@ -196,6 +196,11 @@ class Store:
             if notes is not None:
                 self.conn.execute("UPDATE scan SET notes = ? WHERE id = ?", (notes, scan_id))
 
+    def rename_site(self, old: str, new: str) -> int:
+        """Give every scan of site `old` the site name `new`; returns the number of scans changed."""
+        with self.conn:
+            return self.conn.execute("UPDATE scan SET site = ? WHERE site = ?", (new, old)).rowcount
+
     def delete(self, scan_id: int) -> bool:
         with self.conn:
             return self.conn.execute("DELETE FROM scan WHERE id = ?", (scan_id,)).rowcount > 0

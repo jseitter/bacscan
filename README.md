@@ -33,18 +33,33 @@ sudo /Applications/bacscan.app/Contents/Resources/uninstall.sh
 
 Local builds are ad-hoc signed: fine on the Mac that built them, but macOS asks again for the
 firewall / *Local Network* permission after each rebuild, and other Macs need right-click →
-*Open* the first time. For distribution, sign with your Developer ID certificates and notarize:
+*Open* the first time. For distribution, sign with **Developer ID** certificates and notarize.
+*Apple Development* and *Apple Distribution* certificates do not work here: the first is for
+running on your own test devices, the second only for the App Store.
+
+One-time setup:
+
+1. Xcode → Settings → Accounts → your team → *Manage Certificates…* → **+** →
+   *Developer ID Application*, then again **+** → *Developer ID Installer*
+   (only the team's Account Holder can create these).
+2. Create an app-specific password at account.apple.com and store it for notarization:
+   `xcrun notarytool store-credentials bacscan --apple-id <apple id> --team-id <TEAM>`
+3. Check: `security find-identity -v | grep "Developer ID"`
+
+Each release:
 
 ```sh
-export BACSCAN_APP_IDENTITY="Developer ID Application: <name> (<team>)"
-export BACSCAN_INSTALLER_IDENTITY="Developer ID Installer: <name> (<team>)"
-./scripts/build_pkg.sh --rebuild
-xcrun notarytool submit dist/bacscan-0.1.0.pkg --keychain-profile <profile> --wait
-xcrun stapler staple dist/bacscan-0.1.0.pkg
+export BACSCAN_APP_IDENTITY="Developer ID Application: <name> (<TEAM>)"
+export BACSCAN_INSTALLER_IDENTITY="Developer ID Installer: <name> (<TEAM>)"
+./scripts/build_pkg.sh --rebuild          # signs app, .dmg and .pkg
+./scripts/notarize.sh dist/bacscan-0.1.0.pkg dist/bacscan-0.1.0.dmg
 ```
 
 The app is signed with the hardened runtime and `packaging/entitlements.plist` (needed by the
 embedded Python). Developer ID signing has not been tested yet.
+
+The artwork (app icon, window icon, installer background) is drawn by
+`packaging/make_icon.py`; run it after changing the design.
 
 ## Setup (development)
 

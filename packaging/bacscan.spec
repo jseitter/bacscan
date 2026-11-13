@@ -43,7 +43,7 @@ app = BUNDLE(
         "CFBundleDisplayName": "bacscan",
         "CFBundleShortVersionString": VERSION,
         "CFBundleVersion": VERSION,
-        "LSMinimumSystemVersion": "12.0",
+        "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
         "NSLocalNetworkUsageDescription":
             "bacscan searches the local network for BACnet building automation devices "
