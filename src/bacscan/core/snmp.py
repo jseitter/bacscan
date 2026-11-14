@@ -561,6 +561,15 @@ def _mac_from_index(parts: list[str]) -> str:
     return ":".join(f"{int(x):02x}" for x in parts)
 
 
+def explain_error(msg: str, creds: Credentials) -> str:
+    """Agents silently drop requests with a wrong community, so a timeout needs a hint."""
+    if msg == "no answer" or msg.startswith("no answer ("):
+        why = ("wrong community, SNMP not enabled on the device, or UDP 161 blocked" if creds.version == "v2c"
+               else "SNMP not enabled on the device, UDP 161 blocked, or wrong engine/user settings")
+        return f"{msg}: {why}"
+    return msg
+
+
 def read_agent(ip: str, creds: Credentials, port: int = DEFAULT_PORT, tables: bool = True,
                timeout: float = 2.0, retries: int = 1, source_ip: str | None = None) -> dict:
     """Everything of S3 from one agent. Never raises; errors land in 'error'."""
@@ -647,7 +656,7 @@ def read_agent(ip: str, creds: Credentials, port: int = DEFAULT_PORT, tables: bo
                 e["interface"] = if_names.get(ifindex, str(ifindex))
             r["fdb"] = fdb
     except SnmpError as e:
-        r["error"] = str(e)
+        r["error"] = explain_error(str(e), creds)
     except OSError as e:
         r["error"] = f"{type(e).__name__}: {e}"
     return r

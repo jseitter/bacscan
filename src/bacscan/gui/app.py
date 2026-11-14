@@ -201,6 +201,9 @@ class SnmpDialog(QDialog):
         self.version.addItem("SNMP v3 (user)", "v3")
         self.community = QLineEdit(creds.community if creds else "")
         self.community.setEchoMode(QLineEdit.EchoMode.Password)
+        self.show_secrets = QCheckBox("Show")
+        self.show_secrets.setToolTip("Show the community / passwords as typed (check for typos)")
+        self.show_secrets.toggled.connect(self._toggle_echo)
         self.user = QLineEdit(creds.user if creds else str(settings.value("snmp_user", "")))
         self.auth_proto = QComboBox()
         for p in ("SHA", "SHA256", "MD5", ""):
@@ -235,6 +238,7 @@ class SnmpDialog(QDialog):
         form.addRow("Auth password", self.auth_pass)
         form.addRow("Privacy", self.priv_proto)
         form.addRow("Privacy password", self.priv_pass)
+        form.addRow("", self.show_secrets)
         form.addRow("Targets", self.targets)
         form.addRow("", self.auto)
         form.addRow("", self.all_hosts)
@@ -246,6 +250,11 @@ class SnmpDialog(QDialog):
         self.version.currentIndexChanged.connect(self._update)
         self.auth_proto.currentIndexChanged.connect(self._update)
         self._update()
+
+    def _toggle_echo(self, show: bool) -> None:
+        mode = QLineEdit.EchoMode.Normal if show else QLineEdit.EchoMode.Password
+        for w in (self.community, self.auth_pass, self.priv_pass):
+            w.setEchoMode(mode)
 
     def _update(self) -> None:
         v3 = self.version.currentData() == "v3"

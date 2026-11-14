@@ -162,6 +162,12 @@ def test_gui_snmp_dialog(qapp, tmp_path):
         dlg = SnmpDialog(settings, None, win)
         dlg.version.setCurrentIndex(dlg.version.findData("v3"))
         assert not dlg.community.isEnabled() and dlg.user.isEnabled()
+        from PySide6.QtWidgets import QLineEdit
+        assert dlg.community.echoMode() == QLineEdit.EchoMode.Password
+        dlg.show_secrets.setChecked(True)
+        assert all(w.echoMode() == QLineEdit.EchoMode.Normal for w in (dlg.community, dlg.auth_pass, dlg.priv_pass))
+        dlg.show_secrets.setChecked(False)
+        assert dlg.priv_pass.echoMode() == QLineEdit.EchoMode.Password
         dlg.user.setText("ops")
         dlg.auth_pass.setText("authpass123")
         dlg.priv_pass.setText("privpass123")

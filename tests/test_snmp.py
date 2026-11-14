@@ -200,3 +200,11 @@ def test_cli_snmp(agent, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["agents"][0]["sysName"] == "testagent"
     assert "testcomm" not in json.dumps(out)
+
+
+def test_explain_error():
+    v2 = snmp.Credentials("v2c", community="x")
+    assert "wrong community" in snmp.explain_error("no answer", v2)
+    assert "wrong community" not in snmp.explain_error("no answer", snmp.Credentials("v3", user="u"))
+    assert snmp.explain_error("no answer (timeout)", v2).startswith("no answer (timeout): ")
+    assert snmp.explain_error("authentication failed", v2) == "authentication failed"
