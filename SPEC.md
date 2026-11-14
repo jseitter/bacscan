@@ -23,7 +23,7 @@ Usable both from the **command line** and through a **desktop GUI (Qt)**.
 ### Non-goals (v1)
 - Writing values, commanding outputs, or changing device configuration — the tool stays **strictly read-only** (confirmed, also for later versions).
 - Native BACnet MS/TP over RS-485 (MS/TP devices are reached **through** BACnet/IP routers only — confirmed).
-- BACnet/SC (secure connect), BACnet Ethernet (ISO 8802-3).
+- BACnet Ethernet (ISO 8802-3). (BACnet/SC was a non-goal in v1 and was added later, see §12 / M11.)
 - Trend log / history download, alarm acknowledgement, COV subscriptions (later candidates).
 
 ## 3. Users & typical workflow
@@ -291,3 +291,9 @@ object(id, device_id, object_type, instance, object_name, description, present_v
 2. PDF is rendered with Qt (already bundled) — no extra dependency; the HTML version can also be printed from a browser.
 3. SNMP v3 encryption (AES) needs the `cryptography` package (adds ~10 MB to the app). SNMP v2c and v3 without privacy work without it.
 4. SNMP credentials are never written to disk by bacscan. No Keychain storage in v1 (re-enter per session; user name, protocols and targets are remembered).
+
+## 13. M11: BACnet/SC (2026-11-14)
+- `core/sc.py`: own BVLC-SC codec (Annex AB.2), Connect-Request/Accept handshake over `hub.bsc.bacnet.org` / `dc.bsc.bacnet.org` WebSockets with mutual TLS, heartbeat, Encapsulated-NPDU, Address-Resolution for optional direct connections, VMAC collision NAK reported. `SCLinkLayer` replaces the BACnet/IP link layer in bacpypes3 (6-byte VMAC = local station address); bacpypes3's own `sc` package is not used (transport skeleton only).
+- Config `sc_*` (hub, failover, certificate/key/CA, verify, direct); key password memory-only. CLI `--sc-*`, GUI *BACnet/SC* checkbox + dialog. IP-only parts (host survey, LLDP, listen) are skipped on SC.
+- Tests: `tests/sim_sc.py` (simulated hub, devices with optional direct-connect server, throwaway CA/certificates); codec vectors and cross-check with bacpypes3's decoder; scan, two devices (broadcast), direct connect, read, CLI, VMAC collision, untrusted hub certificate, missing client certificate, no verification, hub down.
+- **Not tested** against a real hub or vendor device. Open: BACnet/SC routers, Advertisement-based hub status, certificate expiry/OCSP warnings in the report.

@@ -8,7 +8,7 @@ version = {}
 exec((ROOT / "src" / "bacscan" / "__init__.py").read_text(), version)
 VERSION = version["__version__"]
 
-hidden = [m for m in collect_submodules("bacpypes3") if not m.startswith(("bacpypes3.sc", "bacpypes3.mcp"))] + collect_submodules("bacscan")
+hidden = [m for m in collect_submodules("bacpypes3") if not m.startswith(("bacpypes3.sc", "bacpypes3.mcp"))] + collect_submodules("bacscan") + collect_submodules("websockets")
 datas = collect_data_files("bacscan") + collect_data_files("bacpypes3")
 
 a = Analysis(
@@ -16,7 +16,7 @@ a = Analysis(
     pathex=[str(ROOT / "src")],
     hiddenimports=hidden,
     datas=datas,
-    excludes=["tkinter", "bacpypes3.sc", "bacpypes3.mcp", "websockets", "PySide6.QtWebEngineCore", "PySide6.QtQml", "PySide6.QtQuick",
+    excludes=["tkinter", "bacpypes3.sc", "bacpypes3.mcp", "PySide6.QtWebEngineCore", "PySide6.QtQml", "PySide6.QtQuick",
               "PySide6.QtMultimedia", "PySide6.Qt3DCore", "PySide6.QtPdf", "pytest"],
     noarchive=False,
 )

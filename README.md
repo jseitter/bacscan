@@ -140,6 +140,29 @@ uv run bacscan netinfo --deep --snmp-auto --community COMMUNITY
 GUI: tick *SNMP* and enter credentials and targets in *SNMP…*; the switch port appears in the
 device and host tables, the agents on the *Network* tab, in Excel (*SNMP* sheets) and the report.
 
+## BACnet/SC (secure connect)
+
+bacscan can scan a BACnet/SC network instead of BACnet/IP. It joins the site's SC hub as an ordinary
+node (secure WebSocket with mutual TLS), sends Who-Is through the hub and reads the devices as usual.
+Read-only, like everything else. You need the hub's URI and an operational certificate + private key
+issued by the site's CA (ask the building automation vendor / IT).
+
+```sh
+uv run bacscan scan --sc-hub wss://hub.example.com:4443 \
+    --sc-cert node.pem --sc-key node.key --sc-ca site-ca.pem --site "Building A"
+uv run bacscan scan --sc-hub wss://hub:4443 --sc-cert node.pem --sc-key node.key --sc-ca ca.pem --sc-direct
+```
+
+- `--sc-failover URI` adds a second hub, `--sc-direct` connects straight to devices that publish a
+  direct-connect URI (Address-Resolution through the hub), `--sc-insecure` skips verifying the hub's
+  certificate (lab use only). An encrypted key's password goes in `BACSCAN_SC_KEY_PASSWORD`; it is never stored.
+- In the GUI tick *BACnet/SC* and click *SC…* (hub, certificate files, options).
+- Devices are addressed by their VMAC (shown as `0x…`). IP-only features (host survey, ARP, LLDP,
+  passive *listen*) do not apply to an SC scan; SNMP works with explicit targets.
+- Status: tested against a simulated hub and devices (TLS, mutual authentication, broadcast, direct connect,
+  error cases) and the wire format cross-checked with bacpypes3's independent decoder. **Not yet tested against
+  a real hub or vendor devices.**
+
 ## Site report
 
 A report for the customer or the project file, made from any saved scan: summary, findings

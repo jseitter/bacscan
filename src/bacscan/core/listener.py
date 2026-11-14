@@ -131,6 +131,9 @@ class Listener:
 
     async def run(self) -> Scan:
         t0 = time.monotonic()
+        if self.cfg.sc_hub:
+            self.scan.status = "failed"
+            raise ScanError("passive listening is not possible on BACnet/SC (the hub only forwards what is addressed to us)")
         try:
             app, label, bind = build_application(self.cfg, PassiveApplication)
         except ScanError:

@@ -264,3 +264,28 @@ def test_progress_dialog_snmp_results(qapp):
     dlg.finish(scan, "done")
     assert dlg.snmp_table.rowCount() == 2 and not dlg.snmp_table.isHidden()
     assert "1 of 2" in dlg.snmp_label.text()
+
+
+def test_gui_sc_config(qapp, tmp_path):
+    from bacscan.gui.sc_dialog import ScDialog
+
+    settings = QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat)
+    win = MainWindow(tmp_path / "gui.db", settings)
+    try:
+        assert not win.sc_cb.isChecked()
+        dlg = ScDialog(settings, "", win)
+        dlg.hub.setText("wss://127.0.0.1:4443")
+        dlg.verify.setChecked(True)
+        dlg.password.setText("topsecret")
+        dlg.direct.setChecked(True)
+        dlg.accept()
+        assert dlg.result() == 1
+        settings.sync()
+        assert "topsecret" not in (tmp_path / "s.ini").read_text()
+        win.sc_key_password = dlg.password.text()
+        win.sc_cb.setChecked(True)  # a hub is configured now, so no dialog opens
+        cfg = win.config_from_ui()
+        assert cfg.sc_hub == "wss://127.0.0.1:4443" and cfg.sc_direct and cfg.sc_verify
+        assert cfg.sc_key_password == "topsecret" and "topsecret" not in str(cfg.to_dict())
+    finally:
+        win.close()

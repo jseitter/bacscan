@@ -144,11 +144,21 @@ class ScanConfig:
     snmp_auto: bool = False  # also the gateway and the LLDP/CDP switch
     snmp_hosts: bool = False  # also every host found
     snmp_port: int = 161
+    # BACnet/SC (Annex AB): join a hub instead of using BACnet/IP
+    sc_hub: str | None = None  # wss://host:port
+    sc_failover: str | None = None
+    sc_cert: str | None = None  # operational certificate + key (PEM files), CA that signed the hub
+    sc_key: str | None = None
+    sc_key_password: str | None = None  # memory only - never stored
+    sc_ca: str | None = None
+    sc_verify: bool = True
+    sc_direct: bool = False  # also connect directly to devices (Address-Resolution)
 
     def to_dict(self) -> dict:
         d = {k: v for k, v in self.__dict__.items()}
         creds = d.pop("snmp_credentials", None)
         d["snmp"] = creds.describe() if creds else None  # no secrets in the database
+        d.pop("sc_key_password", None)
         return d
 
     @property
@@ -197,7 +207,11 @@ class ScanApplication(Application):
 
 def build_application(cfg: ScanConfig, app_class: type[ScanApplication] | None = None
                       ) -> tuple[ScanApplication, str, str]:
-    """Create the BACnet stack. Returns (app, interface label, bind address)."""
+    """Create the BACnet stack. Returns (app, interface label, bind address).
+
+    For BACnet/SC the hub connection is opened later by `await start_sc(app)`."""
+    if cfg.sc_hub:
+        return _build_sc_application(cfg, app_class)
     if cfg.bind_address:
         bind = cfg.bind_address
         label = cfg.bind_address
@@ -238,6 +252,47 @@ def build_application(cfg: ScanConfig, app_class: type[ScanApplication] | None =
     dev.apduTimeout = int(cfg.apdu_timeout * 1000)
     dev.numberOfApduRetries = cfg.retries
     return app, label, bind
+
+
+def _build_sc_application(cfg: ScanConfig, app_class: type[ScanApplication] | None
+                          ) -> tuple[ScanApplication, str, str]:
+    from bacpypes3.basetypes import ObjectType
+    from bacpypes3.vendor import get_vendor_info
+
+    from .sc import SCError, SCLinkLayer, SCSettings
+
+    instance = cfg.device_instance or random.randint(4_000_000, 4_194_302)
+    try:
+        settings = SCSettings(hub=cfg.sc_hub, failover=cfg.sc_failover, cert=cfg.sc_cert, key=cfg.sc_key,
+                              key_password=cfg.sc_key_password, ca=cfg.sc_ca, verify=cfg.sc_verify,
+                              direct=cfg.sc_direct)
+        link = SCLinkLayer(settings)
+    except SCError as e:
+        raise ScanError(str(e)) from e
+    vendor_info = get_vendor_info(999)
+    device = vendor_info.get_object_class(ObjectType.device)(
+        objectIdentifier=("device", instance), objectName=f"bacscan-{instance}", vendorIdentifier=999)
+    app = (app_class or ScanApplication).from_object_list([device])
+    app.sc_link = link
+    app.link_layers[ObjectIdentifier("network-port,1")] = link
+    app.nsap.bind(link, address=link.local_address)
+    device.apduTimeout = int(cfg.apdu_timeout * 1000)
+    device.numberOfApduRetries = cfg.retries
+    return app, f"BACnet/SC {cfg.sc_hub}", f"VMAC {settings.vmac.hex(':')}"
+
+
+async def start_sc(app: Application, emit: Callable[[str], None] = lambda m: None) -> None:
+    """Connect a BACnet/SC stack to its hub (no-op for BACnet/IP)."""
+    link = getattr(app, "sc_link", None)
+    if link is None:
+        return
+    from .sc import SCError
+    link.on_event = emit
+    try:
+        await link.start()
+    except SCError as e:
+        app.close()
+        raise ScanError(f"BACnet/SC: {e}") from e
 
 
 # ---------------------------------------------------------------- device reader
@@ -451,6 +506,12 @@ class Scanner:
             raise
         self.scan.interface = label
         self.scan.local_address = bind
+        if self.cfg.sc_hub:
+            try:
+                await start_sc(app, lambda m: self._emit("log", m))
+            except ScanError:
+                self.scan.status = "failed"
+                raise
         self._own_instance = app.device_object.objectIdentifier[1]
         app.iam_callback = self._on_iam
         self._emit("log", f"BACnet stack on {bind} as device {self._own_instance}")
@@ -538,6 +599,8 @@ class Scanner:
     # -- network environment (spec §4.7)
 
     def _interface(self, bind: str) -> netmod.Interface | None:
+        if self.cfg.sc_hub:
+            return None  # BACnet/SC: no local IP interface is involved
         ip = bind.split("/")[0].split(":")[0]
         try:
             return netmod.find_interface(ip if self.cfg.bind_address else (self.cfg.interface or ip))
@@ -774,6 +837,7 @@ async def read_single(cfg: ScanConfig, address: str, objid: str, prop: str) -> P
     """Ad-hoc single ReadProperty (for `bacscan read`)."""
     app, _label, _bind = build_application(cfg)
     try:
+        await start_sc(app)
         await asyncio.sleep(0.5)
         dev = Device(instance=0, address=address)
         reader = DeviceReader(app, dev, cfg, lambda: None)

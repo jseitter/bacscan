@@ -26,7 +26,11 @@ def build_app(address: str, instance: int, n_analog: int = 5) -> Application:
         ttl=30,
         bbmd=None,
     )
-    app = Application.from_args(args)
+    return populate(Application.from_args(args), n_analog)
+
+
+def populate(app: Application, n_analog: int = 5) -> Application:
+    """Give an application the simulated device's properties and objects."""
     dev = app.device_object
     dev.description = "bacscan test simulator"
     dev.location = "Lab rack 1"

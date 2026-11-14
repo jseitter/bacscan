@@ -54,6 +54,7 @@ from ..storage.diff import diff_lines, diff_scans
 from ..storage.export import export_csv, export_hosts_csv, export_json, import_json
 from ..storage.xlsx import export_xlsx
 from .progress import ScanProgressDialog
+from .sc_dialog import ScDialog
 from .models import DeviceModel, FilterProxy, HostModel, ObjectModel, PropertyModel, TrafficModel
 from .worker import ScanWorker
 
@@ -394,6 +395,7 @@ class MainWindow(QMainWindow):
         self.rescan_worker: ScanWorker | None = None
         self._refresh_pending = False
         self.snmp_creds = None  # snmp.Credentials, memory only
+        self.sc_key_password = ""  # memory only
         self.progress_dlg: ScanProgressDialog | None = None
 
         self._build_toolbar()
@@ -498,11 +500,18 @@ class MainWindow(QMainWindow):
         self.snmp_btn = QPushButton("SNMP…")
         self.snmp_btn.clicked.connect(self.edit_snmp)
         self.snmp_cb.toggled.connect(lambda on: on and self.snmp_creds is None and self.edit_snmp())
+        self.sc_cb = QCheckBox("BACnet/SC")
+        self.sc_cb.setToolTip("Scan a BACnet/SC network through its hub instead of BACnet/IP "
+                              "(the interface, port and BBMD settings are then ignored). Click 'SC…' for the hub "
+                              "and certificates.")
+        self.sc_btn = QPushButton("SC…")
+        self.sc_btn.clicked.connect(self.edit_sc)
+        self.sc_cb.toggled.connect(lambda on: on and not str(self.settings.value("sc_hub", "")) and self.edit_sc())
         self.netinfo_cb.toggled.connect(lambda on: [w.setEnabled(on) for w in
                                                      (self.internet_cb, self.sweep_cb, self.deep_cb, self.public_ip_cb)])
         checks = QHBoxLayout()
         for cb in (self.netinfo_cb, self.internet_cb, self.sweep_cb, self.deep_cb, self.public_ip_cb,
-                   self.switch_cb, self.snmp_cb, self.snmp_btn):
+                   self.switch_cb, self.snmp_cb, self.snmp_btn, self.sc_cb, self.sc_btn):
             checks.addWidget(cb)
         checks.addStretch(1)
         g.addLayout(checks, 2, 1, 1, 7)
@@ -1016,6 +1025,18 @@ class MainWindow(QMainWindow):
             cfg.snmp_hosts = str(s.value("snmp_hosts", False)).lower() == "true"
             if not cfg.snmp_enabled:
                 raise ValueError("SNMP: no targets (enter targets or tick gateway/switch in 'SNMP…')")
+        if self.sc_cb.isChecked():
+            hub = str(s.value("sc_hub", "")).strip()
+            if not hub:
+                raise ValueError("BACnet/SC is ticked but no hub is set (click 'SC…')")
+            cfg.sc_hub = hub
+            cfg.sc_failover = str(s.value("sc_failover", "")).strip() or None
+            cfg.sc_cert = str(s.value("sc_cert", "")).strip() or None
+            cfg.sc_key = str(s.value("sc_key", "")).strip() or None
+            cfg.sc_ca = str(s.value("sc_ca", "")).strip() or None
+            cfg.sc_key_password = self.sc_key_password or None
+            cfg.sc_verify = str(s.value("sc_verify", True)).lower() == "true"
+            cfg.sc_direct = str(s.value("sc_direct", False)).lower() == "true"
         rng = self.range_edit.text().strip()
         if rng:
             lo, _, hi = rng.partition("-")
@@ -1039,6 +1060,10 @@ class MainWindow(QMainWindow):
 
     def start_listen_from_ui(self) -> None:
         if self.worker is not None:
+            return
+        if self.sc_cb.isChecked():
+            QMessageBox.information(self, "Listen", "Passive listening is not possible on BACnet/SC: the hub only "
+                                                    "forwards what is addressed to this node.")
             return
         seconds, ok = QInputDialog.getInt(self, "Listen (passive)",
                                           "Record BACnet broadcasts for how many seconds?\n"
@@ -1213,7 +1238,7 @@ class MainWindow(QMainWindow):
     def _set_busy(self, busy: bool, allow_stop: bool = True) -> None:
         for w in (self.scan_btn, self.start_act, self.listen_btn, self.listen_act, self.iface_combo, self.port_spin, self.level_combo,
                   self.wait_spin, self.site_edit, self.targets_edit, self.bbmd_edit, self.range_edit,
-                  self.history, self.netinfo_cb):
+                  self.history, self.netinfo_cb, self.sc_cb, self.sc_btn):
             w.setEnabled(not busy)
         self.stop_btn.setEnabled(busy and allow_stop)
         self.stop_act.setEnabled(busy and allow_stop)
@@ -1251,6 +1276,15 @@ class MainWindow(QMainWindow):
         else:
             export_json(self.scan, path)
             self.status_label.setText(f"Exported to {path}")
+
+    def edit_sc(self) -> None:
+        dlg = ScDialog(self.settings, self.sc_key_password, self)
+        if dlg.exec():
+            self.sc_key_password = dlg.password.text()
+            self.sc_cb.setChecked(True)
+            self.sc_btn.setToolTip(str(self.settings.value("sc_hub", "")))
+        elif not str(self.settings.value("sc_hub", "")):
+            self.sc_cb.setChecked(False)
 
     def edit_snmp(self) -> None:
         dlg = SnmpDialog(self.settings, self.snmp_creds, self)

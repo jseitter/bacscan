@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -48,6 +49,13 @@ def _config_from_args(a: argparse.Namespace) -> ScanConfig:
         device_instance=a.local_instance,
         bind_address=a.bind,
     )
+    if getattr(a, "sc_hub", None):
+        cfg.sc_hub = a.sc_hub
+        cfg.sc_failover = a.sc_failover
+        cfg.sc_cert, cfg.sc_key, cfg.sc_ca = a.sc_cert, a.sc_key, a.sc_ca
+        cfg.sc_key_password = a.sc_key_password or os.environ.get("BACSCAN_SC_KEY_PASSWORD") or None
+        cfg.sc_verify = not a.sc_insecure
+        cfg.sc_direct = a.sc_direct
     for name in ("level", "site", "notes"):
         if hasattr(a, name) and getattr(a, name) is not None:
             setattr(cfg, name, getattr(a, name))
@@ -655,6 +663,17 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--retries", type=int, default=2, help="retries per request (default 2)")
         sp.add_argument("--local-instance", type=int, help="our own device instance (default: random)")
         sp.add_argument("--bind", help=argparse.SUPPRESS)  # expert/test: explicit 'ip/prefix:port'
+        g = sp.add_argument_group("BACnet/SC (secure connect; replaces BACnet/IP when --sc-hub is given)")
+        g.add_argument("--sc-hub", metavar="URI", help="hub WebSocket URI, e.g. wss://hub.example.com:4443")
+        g.add_argument("--sc-failover", metavar="URI", help="failover hub URI")
+        g.add_argument("--sc-cert", metavar="PEM", help="operational certificate of this node")
+        g.add_argument("--sc-key", metavar="PEM", help="private key of that certificate")
+        g.add_argument("--sc-key-password", help="password of the private key (or env BACSCAN_SC_KEY_PASSWORD)")
+        g.add_argument("--sc-ca", metavar="PEM", help="CA certificate(s) that signed the hub's certificate")
+        g.add_argument("--sc-insecure", action="store_true",
+                       help="do not verify the hub's certificate (lab use only)")
+        g.add_argument("--sc-direct", action="store_true",
+                       help="connect directly to devices that offer a direct-connect URI")
 
     def survey_opts(sp: argparse.ArgumentParser) -> None:
         sp.add_argument("--no-internet", action="store_true", help="skip internet reachability checks")
