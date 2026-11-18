@@ -12,7 +12,7 @@ See [SPEC.md](SPEC.md) for the full specification.
 ./scripts/build_pkg.sh --rebuild   # -> dist/bacscan-<version>.pkg (+ dist/bacscan.app and a .dmg)
 ```
 
-Double-click the `.pkg` (or `sudo installer -pkg dist/bacscan-0.1.0.pkg -target /`). It installs
+Double-click the `.pkg` (or `sudo installer -pkg dist/bacscan-0.1.1.pkg -target /`). It installs
 `bacscan.app` into `/Applications` and the command `bacscan` into `/usr/local/bin`, so both work:
 
 ```sh
@@ -52,7 +52,7 @@ Each release:
 export BACSCAN_APP_IDENTITY="Developer ID Application: <name> (<TEAM>)"
 export BACSCAN_INSTALLER_IDENTITY="Developer ID Installer: <name> (<TEAM>)"
 ./scripts/build_pkg.sh --rebuild          # signs app, .dmg and .pkg
-./scripts/notarize.sh dist/bacscan-0.1.0.pkg dist/bacscan-0.1.0.dmg
+./scripts/notarize.sh dist/bacscan-0.1.1.pkg dist/bacscan-0.1.0.dmg
 ```
 
 The app is signed with the hardened runtime and `packaging/entitlements.plist` (needed by the

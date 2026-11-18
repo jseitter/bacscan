@@ -444,25 +444,38 @@ class DeviceReader:
 
     async def read_object_list(self) -> list[ObjectIdentifier]:
         dev_id = ObjectIdentifier(("device", self.device.instance))
+        oplist = PropertyIdentifier("object-list")
+        # We do not accept segmented responses, so the whole list only fits one APDU if
+        # count * 5 bytes (+ headers) <= max APDU. Otherwise the device aborts or stays
+        # silent and we would wait out the timeouts. Ask for the length first.
+        length: int | None = None
         try:
-            value = await self._request(
-                lambda: self.app.read_property(self.addr, dev_id, PropertyIdentifier("object-list"))
-            )
-            return [ObjectIdentifier(v) for v in value]
+            length = int(await self._request(
+                lambda: self.app.read_property(self.addr, dev_id, oplist, 0)))
         except (DeviceUnreachable, ScanCancelled):
             raise
         except Exception as e:
-            log.info("device %s: whole object-list read failed (%s), reading element by element",
-                     self.device.instance, error_text(e))
-        length = await self._request(
-            lambda: self.app.read_property(self.addr, dev_id, PropertyIdentifier("object-list"), 0)
-        )
+            log.info("device %s: object-list length read failed (%s)", self.device.instance, error_text(e))
+        max_apdu = self.device.max_apdu or 480
+        if length is None or length * 5 + 30 <= max_apdu:
+            try:
+                value = await self._request(
+                    lambda: self.app.read_property(self.addr, dev_id, oplist))
+                return [ObjectIdentifier(v) for v in value]
+            except (DeviceUnreachable, ScanCancelled):
+                raise
+            except Exception as e:
+                log.info("device %s: whole object-list read failed (%s), reading element by element",
+                         self.device.instance, error_text(e))
+        if length is None:
+            raise ScanError("cannot read object-list")
+        log.info("device %s: %d objects exceed max APDU %d, reading object-list element by element",
+                 self.device.instance, length, max_apdu)
         result = []
-        for i in range(1, int(length) + 1):
+        for i in range(1, length + 1):
             try:
                 v = await self._request(
-                    lambda i=i: self.app.read_property(self.addr, dev_id, PropertyIdentifier("object-list"), i)
-                )
+                    lambda i=i: self.app.read_property(self.addr, dev_id, oplist, i))
                 result.append(ObjectIdentifier(v))
             except (DeviceUnreachable, ScanCancelled):
                 raise

@@ -140,7 +140,7 @@ def test_object_list_element_fallback(port_pair, monkeypatch):
 
     scan = run_scan(*port_pair, patch=patch)
     d = scan.devices[0]
-    assert calls[:2] == [None, 0] and len(calls) == 2 + 10
+    assert calls[:2] == [0, None] and len(calls) == 2 + 10
     assert len(d.objects) == 9 and d.status == "done"
 
 
@@ -191,3 +191,38 @@ def test_listen_records_without_replying(port_pair):
     assert services["who-is"]["detail"] == "all devices"
     assert services["i-am"]["count"] == 1
     assert [d.instance for d in scan.devices] == [3003] and scan.level == "listen"
+
+
+def test_object_list_skips_whole_read_when_too_big_for_apdu(port_pair, monkeypatch):
+    """Device with small max APDU and a long list: no whole-list read (would hang/abort)."""
+    calls = []
+
+    def patch(sc):
+        orig_build = scanner_mod.build_application
+
+        def build(cfg):
+            app, label, bind = orig_build(cfg)
+            orig_rp = app.read_property
+
+            async def rp(addr, objid, prop, index=None):
+                if str(prop) == "object-list":
+                    calls.append(index)
+                    assert index is not None, "whole object-list must not be requested"
+                return await orig_rp(addr, objid, prop, index)
+
+            app.read_property = rp
+            return app, label, bind
+
+        monkeypatch.setattr(scanner_mod, "build_application", build)
+
+        orig_init = scanner_mod.DeviceReader.__init__
+
+        def init(self, *a, **k):
+            orig_init(self, *a, **k)
+            self.device.max_apdu = 50  # 10 objects * 5 bytes + 30 > 50
+
+        monkeypatch.setattr(scanner_mod.DeviceReader, "__init__", init)
+
+    scan = run_scan(*port_pair, patch=patch)
+    assert calls[0] == 0 and None not in calls
+    assert len(scan.devices[0].objects) == 9
