@@ -76,6 +76,7 @@ class Device:
     eth_vendor: str = ""  # vendor from the MAC's OUI prefix
     eth_mac_source: str = ""  # "arp" (device itself) | "router" (device is behind a BACnet router)
     switch_port: str = ""  # switch / port / VLAN of eth_mac, from SNMP (S4)
+    diag: dict = field(default_factory=dict)  # read diagnostics (requests, timeouts, events), see DeviceReader
 
     @property
     def ip(self) -> str | None:

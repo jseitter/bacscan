@@ -81,6 +81,22 @@ _TYPE_PROPS = {
 }
 TYPE_PROPS = {k: _props(*v) for k, v in _TYPE_PROPS.items()}
 
+# Properties that are arrays too big for one APDU (we do not accept segmented replies, and one oversized
+# property would make the device abort a whole ReadPropertyMultiple). They are read element by element.
+ARRAY_PROPS = {"schedule": _props("weekly-schedule")}
+DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _day_text(day: Any) -> str:
+    entries = day.get("daySchedule", []) if isinstance(day, dict) else []
+    return ", ".join(f"{str(e.get('time', ''))[:5]}={e.get('value') if e.get('value') is not None else 'null'}"
+                     for e in entries) or "-"
+
+
+def weekly_text(days: list[Any]) -> str:
+    return " | ".join(f"{DAY_NAMES[i] if i < 7 else i + 1}: " + (_day_text(d) if d is not None else "?")
+                      for i, d in enumerate(days))
+
 
 _IP_PROPS = {"ip-address", "ip-subnet-mask", "ip-default-gateway", "ip-dns-server"}
 
@@ -315,21 +331,71 @@ class DeviceReader:
         self.props_per_rpm = 8 if small else 30
         self.objects_per_rpm = 1 if small else 3
         self.consecutive_timeouts = 0
+        # diagnostics (stored with the device, shown in GUI / CLI / report)
+        self.requests = 0
+        self.timeouts = 0
+        self.failures = 0
+        self.busy_seconds = 0.0
+        self.slowest: list[tuple[float, str]] = []
+        self.events: list[str] = []
+        self.object_list_mode = ""
+        self.current = ""  # request in flight (for "where is it stuck")
+
+    # -- diagnostics
+
+    def note(self, text: str) -> None:
+        if len(self.events) < 40:
+            self.events.append(text)
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "requests": self.requests,
+            "timeouts": self.timeouts,
+            "failures": self.failures,
+            "busy_seconds": round(self.busy_seconds, 2),
+            "max_apdu": self.device.max_apdu,
+            "segmentation": self.device.segmentation,
+            "read_mode": "ReadPropertyMultiple" if self.use_rpm else "ReadProperty",
+            "props_per_rpm": self.props_per_rpm,
+            "objects_per_rpm": self.objects_per_rpm,
+            "object_list_mode": self.object_list_mode,
+            "apdu_timeout": self.cfg.apdu_timeout,
+            "retries": self.cfg.retries,
+            "slowest": [{"request": r, "seconds": round(t, 2)} for t, r in sorted(self.slowest, reverse=True)],
+            "events": list(self.events),
+            "last_request": self.current,
+        }
 
     # -- low level
 
-    async def _request(self, factory: Callable[[], Awaitable[Any]]) -> Any:
+    async def _request(self, factory: Callable[[], Awaitable[Any]], label: str = "request") -> Any:
         self.check_cancel()
         if self.remote and self.cfg.remote_delay:
             await asyncio.sleep(self.cfg.remote_delay)
         limit = self.cfg.apdu_timeout * (self.cfg.retries + 1) + 2
+        self.requests += 1
+        self.current = label
+        t0 = time.monotonic()
         try:
             result = await asyncio.wait_for(factory(), timeout=limit)
         except (asyncio.TimeoutError, TimeoutError):
+            self.timeouts += 1
+            self.note(f"no answer to {label} within {limit:g}s")
             self.consecutive_timeouts += 1
             if self.consecutive_timeouts >= 3:
                 raise DeviceUnreachable("device stopped responding (3 timeouts in a row)")
             raise TimeoutError()
+        except (DeviceUnreachable, ScanCancelled):
+            raise
+        except Exception as e:
+            self.failures += 1
+            if not is_unknown_property(e):
+                self.note(f"{label}: {error_text(e)}")
+            raise
+        finally:
+            dt = time.monotonic() - t0
+            self.busy_seconds += dt
+            self.slowest = sorted(self.slowest + [(dt, label)], reverse=True)[:5]
         self.consecutive_timeouts = 0
         return result
 
@@ -337,7 +403,8 @@ class DeviceReader:
         """ReadProperty. None means the object does not have this property."""
         try:
             value = await self._request(
-                lambda: self.app.read_property(self.addr, objid, PropertyIdentifier(prop), index)
+                lambda: self.app.read_property(self.addr, objid, PropertyIdentifier(prop), index),
+                f"ReadProperty {objid[0]},{objid[1]} {prop}",
             )
         except DeviceUnreachable:
             raise
@@ -354,13 +421,47 @@ class DeviceReader:
             return None if is_unknown_property(value) else PropValue(error=error_text(value))
         return make_value(prop, value)
 
+    async def read_array_prop(self, objid: ObjectIdentifier, prop: str) -> PropValue | None:
+        """Read an array property one element at a time (each element fits a small APDU)."""
+        if self.device.segmentation in ("segmented-transmit", "segmented-both"):
+            whole = await self.rp(objid, prop)  # one request when the device can segment its reply
+            if whole is not None and whole.error is None and isinstance(whole.value, list):
+                text = weekly_text(whole.value) if prop == "weekly-schedule" else whole.text
+                return PropValue(value=whole.value, text=text)
+            self.note(f"{prop} whole read failed -> reading element by element")
+        head = await self.rp(objid, prop, 0)
+        if head is None or head.error is not None:
+            return head
+        try:
+            count = int(head.value)
+        except (TypeError, ValueError):
+            return PropValue(error=f"bad array size {head.value!r}")
+        items: list[Any] = []
+        failed: list[str] = []
+        for i in range(1, count + 1):
+            pv = await self.rp(objid, prop, i)
+            if pv is None or pv.error is not None:
+                items.append(None)
+                failed.append(f"[{i}] {pv.error if pv else 'unknown-property'}")
+            else:
+                items.append(pv.value)
+        if failed and len(failed) == count:
+            return PropValue(error="; ".join(failed[:3]))
+        text = weekly_text(items) if prop == "weekly-schedule" else "; ".join(str(x) for x in items)
+        if failed:
+            text += f"  (unreadable: {', '.join(failed[:3])})"
+        return PropValue(value=items, text=text)
+
     async def rpm(self, specs: list[tuple[ObjectIdentifier, list[str]]]) -> dict[str, dict[str, PropValue]]:
         """ReadPropertyMultiple. Raises on whole-request failure."""
         params: list[Any] = []
         for objid, props in specs:
             params.append(objid)
             params.append([PropertyIdentifier(p) for p in props])
-        result = await self._request(lambda: self.app.read_property_multiple(self.addr, params))
+        names = "; ".join(f"{o[0]},{o[1]} " + (",".join(ps) if len(ps) <= 3 else f"{len(ps)} props")
+                          for o, ps in specs)
+        result = await self._request(lambda: self.app.read_property_multiple(self.addr, params),
+                                     f"ReadPropertyMultiple {names}")
         if result is None:
             raise ScanError("invalid RPM response")
         out: dict[str, dict[str, PropValue]] = {}
@@ -410,6 +511,7 @@ class DeviceReader:
             except Exception as e:
                 log.debug("multi-object RPM failed on %s: %s; using 1 object per request",
                           self.device.instance, error_text(e))
+                self.note(f"multi-object request failed ({error_text(e)}) -> 1 object per request")
                 self.objects_per_rpm = 1
         return {str(o): await self.read_props(o, props_of(o)) for o in objids}
 
@@ -428,54 +530,73 @@ class DeviceReader:
         if plist and plist.error is None and isinstance(plist.value, list):
             names = ["object-name"] + [str(p) for p in plist.value]
         names = list(dict.fromkeys(names))
-        return {p: v for p in names if (v := await self.rp(objid, p)) is not None}
+        big = ARRAY_PROPS.get(str(objid[0]), [])
+        out: dict[str, PropValue] = {}
+        for p in names:
+            v = await (self.read_array_prop(objid, p) if p in big else self.rp(objid, p))
+            if v is not None:
+                out[p] = v
+        return out
 
     def _rpm_failed(self, e: Exception) -> None:
         text = error_text(e)
         if "unrecognized-service" in text or "service-request-denied" in text:
             log.info("device %s does not support ReadPropertyMultiple, using ReadProperty", self.device.instance)
+            self.note("ReadPropertyMultiple refused -> switched to ReadProperty")
             self.use_rpm = False
         elif self.props_per_rpm > 4:
             self.props_per_rpm = 4
             log.debug("RPM failed on %s (%s); smaller requests", self.device.instance, text)
+            self.note(f"ReadPropertyMultiple failed ({text}) -> 4 properties per request")
         else:
             log.info("RPM unreliable on %s (%s), using ReadProperty", self.device.instance, text)
+            self.note(f"ReadPropertyMultiple unreliable ({text}) -> switched to ReadProperty")
             self.use_rpm = False
 
     async def read_object_list(self) -> list[ObjectIdentifier]:
         dev_id = ObjectIdentifier(("device", self.device.instance))
         oplist = PropertyIdentifier("object-list")
-        # We do not accept segmented responses, so the whole list only fits one APDU if
-        # count * 5 bytes (+ headers) <= max APDU. Otherwise the device aborts or stays
-        # silent and we would wait out the timeouts. Ask for the length first.
+        # We accept segmented replies (see build_application), but a device can only send one if it
+        # supports segmented transmit. Without that the whole list must fit one APDU:
+        # count * 5 bytes (+ headers) <= max APDU, else it aborts or stays silent and we would wait
+        # out the timeouts. So ask for the length first.
         length: int | None = None
         try:
             length = int(await self._request(
-                lambda: self.app.read_property(self.addr, dev_id, oplist, 0)))
+                lambda: self.app.read_property(self.addr, dev_id, oplist, 0), "ReadProperty object-list[0]"))
         except (DeviceUnreachable, ScanCancelled):
             raise
         except Exception as e:
             log.info("device %s: object-list length read failed (%s)", self.device.instance, error_text(e))
         max_apdu = self.device.max_apdu or 480
-        if length is None or length * 5 + 30 <= max_apdu:
+        can_segment = self.device.segmentation in ("segmented-transmit", "segmented-both")
+        if length is None or length * 5 + 30 <= max_apdu or can_segment:
             try:
                 value = await self._request(
-                    lambda: self.app.read_property(self.addr, dev_id, oplist))
+                    lambda: self.app.read_property(self.addr, dev_id, oplist), "ReadProperty object-list (whole)")
+                self.object_list_mode = ("whole list in one request" if length is None or length * 5 + 30 <= max_apdu
+                                         else f"whole list, segmented reply ({length} objects)")
                 return [ObjectIdentifier(v) for v in value]
             except (DeviceUnreachable, ScanCancelled):
                 raise
             except Exception as e:
                 log.info("device %s: whole object-list read failed (%s), reading element by element",
                          self.device.instance, error_text(e))
+                self.note("whole object-list read failed -> reading element by element")
         if length is None:
             raise ScanError("cannot read object-list")
         log.info("device %s: %d objects exceed max APDU %d, reading object-list element by element",
                  self.device.instance, length, max_apdu)
+        self.object_list_mode = f"element by element ({length} objects)"
+        if length * 5 + 30 > max_apdu and not can_segment:
+            self.note(f"object-list ({length} objects, ~{length * 5 + 30} bytes) does not fit max APDU "
+                      f"{max_apdu} and the device cannot send segmented replies -> element by element")
         result = []
         for i in range(1, length + 1):
             try:
                 v = await self._request(
-                    lambda i=i: self.app.read_property(self.addr, dev_id, oplist, i))
+                    lambda i=i: self.app.read_property(self.addr, dev_id, oplist, i),
+                    f"ReadProperty object-list[{i}]")
                 result.append(ObjectIdentifier(v))
             except (DeviceUnreachable, ScanCancelled):
                 raise
@@ -813,6 +934,7 @@ class Scanner:
             dev.errors.append(error_text(e))
             self._emit("log", f"device {dev.instance}: {error_text(e)}", level=logging.WARNING)
             log.debug("device read failed", exc_info=True)
+        dev.diag = reader.diagnostics()
         self._emit("device_updated", f"device {dev.instance} {dev.status}", device=dev)
 
     def _apply_services(self, reader: DeviceReader, dev: Device) -> None:
@@ -837,6 +959,12 @@ class Scanner:
             else:
                 batch = objids[i:i + max(1, reader.objects_per_rpm)]
                 results = await reader.read_many(batch, props_of)
+            if self.cfg.level != "all":
+                for o in batch:
+                    for prop in ARRAY_PROPS.get(str(o[0]), []):
+                        pv = await reader.read_array_prop(o, prop)
+                        if pv is not None:
+                            results.setdefault(str(o), {})[prop] = pv
             for o in batch:
                 obj = BacnetObject(object_type=str(o[0]), instance=int(o[1]), props=results.get(str(o), {}))
                 dev.objects.append(obj)

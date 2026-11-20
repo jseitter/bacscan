@@ -161,6 +161,10 @@ class PropertyModel(_ListModel):
         if d.network is not None:
             meta += [("(network)", str(d.network)), ("(MAC)", d.mac or ""), ("(router)", d.router or "")]
         meta += [(f"(error {i + 1})", e) for i, e in enumerate(d.errors)]
+        from ..core.diagnostics import diag_rows, hint
+        if hint(d):
+            meta.append(("(hint)", hint(d)))
+        meta += [(f"(diag: {k})", v) for k, v in diag_rows(d)]
         self.set_items(meta + list(d.props.items()))
 
     def show_object(self, o: BacnetObject | None) -> None:

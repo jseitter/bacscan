@@ -6,6 +6,7 @@ from typing import Any
 from bacpypes3.apdu import AbortPDU, ErrorPDU, ErrorRejectAbortNack, RejectPDU
 from bacpypes3.basetypes import ErrorType
 from bacpypes3.constructeddata import Any as BAny
+from bacpypes3.constructeddata import AnyAtomic
 from bacpypes3.constructeddata import Choice, Sequence
 from bacpypes3.json.util import atomic_encode, sequence_to_json
 from bacpypes3.primitivedata import (
@@ -13,6 +14,7 @@ from bacpypes3.primitivedata import (
     BitString,
     Date,
     Enumerated,
+    Null,
     ObjectIdentifier,
     Real,
     Time,
@@ -49,6 +51,8 @@ def to_json(value: Any) -> Any:
         return f"{value[0]},{value[1]}"
     if isinstance(value, (Date, Time)):
         return str(value)
+    if isinstance(value, Null):
+        return None
     if isinstance(value, Atomic):
         try:
             v = atomic_encode(value)
@@ -58,7 +62,25 @@ def to_json(value: Any) -> Any:
             f = float(value)
             return float(f"{f:.7g}") if f == f and f not in (float("inf"), float("-inf")) else str(f)
         return v
-    if isinstance(value, (Sequence, Choice)):
+    if isinstance(value, AnyAtomic):  # e.g. TimeValue.value in schedules: unwrap the primitive inside
+        try:
+            return to_json(value.get_value())
+        except Exception:
+            return str(value)
+    if isinstance(value, Sequence):
+        try:
+            out = {}
+            for name in type(value)._elements:
+                item = getattr(value, name, None)
+                if item is not None:
+                    out[name] = to_json(item)
+            return out
+        except Exception:
+            try:
+                return sequence_to_json(value)
+            except Exception:
+                return str(value)
+    if isinstance(value, Choice):
         try:
             return sequence_to_json(value)
         except Exception:
@@ -87,6 +109,8 @@ def to_text(value: Any) -> str:
         return f"{float(value):.6g}"
     if isinstance(value, (Date, Time)):
         return str(value)
+    if isinstance(value, Null):
+        return "null"
     if isinstance(value, Atomic):
         j = to_json(value)
         if isinstance(j, bool) or type(value).__name__ == "Boolean":

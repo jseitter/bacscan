@@ -147,6 +147,19 @@ def build_html(scan: Scan, objects: bool = False, author: str = "") -> str:
     else:
         p.append("<p>No findings.</p>")
 
+    # scan diagnostics: only devices that were slow, incomplete or failed
+    from ..core.diagnostics import diag_rows, hint
+    problem = [d for d in scan.devices if d.diag and (d.status != "done" or d.diag.get("timeouts") or d.errors)]
+    if problem:
+        p.append("<h2>Scan diagnostics</h2>")
+        p.append('<p class="small muted">Devices that were read incompletely or needed workarounds.</p>')
+        for d in problem:
+            p.append(f"<h3>{_e(d.instance)} {_e(d.name)} <span class=\"muted\">({_e(d.status)})</span></h3>")
+            rows = [[k, v] for k, v in diag_rows(d)] + [["error", e] for e in d.errors[:10]]
+            if hint(d):
+                rows.insert(0, ["hint", hint(d)])
+            p.append(_table(["Item", "Detail"], rows, widths=[18, 82], small=True))
+
     # network
     if net:
         p.append("<h2>Network environment</h2>")
@@ -259,6 +272,12 @@ def write_html(scan: Scan, path: str | Path, objects: bool = False, author: str 
 
 def write_pdf(scan: Scan, path: str | Path, objects: bool = False, author: str = "") -> None:
     """A4 PDF with a footer (site, page n of m) on every page."""
+    label = " · ".join(x for x in (scan.site, f"scan {scan.id}" if scan.id else "",
+                                   (scan.started_at or "")[:10]) if x)
+    _html_to_pdf(build_html(scan, objects, author), path, f"Site report {scan.site}".strip(), label)
+
+
+def _html_to_pdf(html: str, path: str | Path, title: str, label: str) -> None:
     from PySide6.QtCore import QMarginsF, QRectF, QSizeF, Qt
     from PySide6.QtGui import (QAbstractTextDocumentLayout, QColor, QFont, QGuiApplication, QPageLayout,
                                QPageSize, QPainter, QPdfWriter, QTextDocument)
@@ -271,7 +290,7 @@ def write_pdf(scan: Scan, path: str | Path, objects: bool = False, author: str =
     writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
     writer.setPageMargins(QMarginsF(14, 14, 14, 12), QPageLayout.Unit.Millimeter)
     writer.setResolution(96)
-    writer.setTitle(f"Site report {scan.site}".strip())
+    writer.setTitle(title)
     writer.setCreator(f"bacscan {__version__}")
 
     doc = QTextDocument()
@@ -279,14 +298,12 @@ def write_pdf(scan: Scan, path: str | Path, objects: bool = False, author: str =
     font = QFont("Helvetica Neue")
     font.setPointSizeF(9)
     doc.setDefaultFont(font)
-    doc.setHtml(build_html(scan, objects, author).replace("margin: 24px", "margin: 0"))
+    doc.setHtml(html.replace("margin: 24px", "margin: 0"))
     rect = writer.pageLayout().paintRectPixels(writer.resolution())
     w, footer = rect.width(), 24
     body = rect.height() - footer
     doc.setPageSize(QSizeF(w, body))
     pages = doc.pageCount()
-    label = " · ".join(x for x in (scan.site, f"scan {scan.id}" if scan.id else "",
-                                   (scan.started_at or "")[:10]) if x)
     painter = QPainter(writer)
     try:
         for i in range(pages):
@@ -309,3 +326,92 @@ def write_pdf(scan: Scan, path: str | Path, objects: bool = False, author: str =
             painter.drawText(r, Qt.AlignmentFlag.AlignRight, f"page {i + 1} of {pages}")
     finally:
         painter.end()
+
+
+# ---------------------------------------------------------------- diff report
+
+DIFF_MARK = {"+": ("#2e7d32", "added"), "-": ("#c62828", "removed"), "~": ("#e65100", "changed")}
+
+
+def _scan_line(s: Scan) -> str:
+    return (f"scan {s.id} · {(s.started_at or '')[:16].replace('T', ' ')} · "
+            f"{len(s.devices)} device(s), {s.object_count} object(s)")
+
+
+def build_diff_html(a: Scan, b: Scan, values: bool = False, author: str = "") -> str:
+    """Report of what changed from scan a (older) to scan b (newer)."""
+    from .diff import diff_lines, diff_scans
+
+    d = diff_scans(a, b, values=values)
+    lines = diff_lines(d)
+    counts = Counter(k for k, _ in lines if k != "#")
+    site = b.site or a.site or "unnamed site"
+    fa, fb = {(f.title) for f in findings(a)}, {(f.title) for f in findings(b)}
+    p: list[str] = [f"<html><head><meta charset='utf-8'><title>Change report — {_e(site)}</title>"
+                    f"<style>{CSS}</style></head><body>"]
+    p.append(f"<h1>{_e(site)}</h1>")
+    p.append('<p class="muted">Change report'
+             + (f" · {_e(author)}" if author else "") + "</p>")
+    p.append("<h2>Compared scans</h2>")
+    p.append(_table(["", "Scan"], [["Older", _scan_line(a)], ["Newer", _scan_line(b)]], widths=[12, 88]))
+
+    p.append("<h2>Summary</h2>")
+    if d.empty:
+        p.append("<p><b>No differences</b> between these two scans.</p>")
+    else:
+        p.append(_kv([
+            ("Devices added / removed", f"{len(d.devices_added)} / {len(d.devices_removed)}"),
+            ("Devices changed", len(d.devices_changed)),
+            ("Objects added / removed", f"{sum(len(x.objects_added) for x in d.devices_changed)} / "
+                                         f"{sum(len(x.objects_removed) for x in d.devices_changed)}"),
+            ("Network changes", len(d.network_changes)),
+            ("Hosts added / removed / changed", f"{len(d.hosts_added)} / {len(d.hosts_removed)} / "
+                                                f"{len(d.hosts_changed)}"),
+            ("Total", f"{counts['+']} added, {counts['-']} removed, {counts['~']} changed"),
+        ]))
+
+    new_f = [f for f in findings(b) if f.title not in fa]
+    gone_f = [f for f in findings(a) if f.title not in fb]
+    if new_f or gone_f:
+        p.append("<h2>Findings</h2>")
+        p.append('<table width="100%" border="0" cellspacing="0" cellpadding="4">')
+        for f in new_f:
+            p.append(f'<tr><td width="14%"><font color="#c62828"><b>NEW</b></font></td>'
+                     f"<td><b>{_e(f.title)}</b> ({_e(f.severity)})<br/>{_e(f.detail)}</td></tr>")
+        for f in gone_f:
+            p.append(f'<tr><td width="14%"><font color="#2e7d32"><b>RESOLVED</b></font></td>'
+                     f"<td><b>{_e(f.title)}</b> ({_e(f.severity)})</td></tr>")
+        p.append("</table>")
+
+    if not d.empty:
+        p.append("<h2>Changes</h2>")
+        section: list[list[Any]] = []
+
+        def flush() -> None:
+            if section:
+                p.append(_table(["", "Change"], section, widths=[12, 88], small=True))
+                section.clear()
+
+        for kind, text in lines:
+            if kind == "#":
+                flush()
+                p.append(f"<h3>{_e(text)}</h3>")
+                continue
+            color, word = DIFF_MARK[kind]
+            section.append([_Raw(f'<font color="{color}"><b>{word}</b></font>'), text])
+        flush()
+
+    p.append(f'<p class="small muted">Generated by bacscan {_e(__version__)}. '
+             "Present values are compared only when requested.</p>")
+    p.append("</body></html>")
+    return "\n".join(p)
+
+
+def write_diff_report(a: Scan, b: Scan, path: str | Path, values: bool = False, author: str = "") -> None:
+    """Write the change report as .pdf or .html (by file extension)."""
+    html = build_diff_html(a, b, values, author)
+    if Path(path).suffix.lower() == ".pdf":
+        label = " · ".join(x for x in (b.site or a.site, f"scans {a.id} → {b.id}") if x)
+        _html_to_pdf(html, path, f"Change report {b.site or a.site}".strip(), label)
+    else:
+        Path(path).write_text(html, encoding="utf-8")

@@ -222,7 +222,62 @@ def test_object_list_skips_whole_read_when_too_big_for_apdu(port_pair, monkeypat
             self.device.max_apdu = 50  # 10 objects * 5 bytes + 30 > 50
 
         monkeypatch.setattr(scanner_mod.DeviceReader, "__init__", init)
+        orig_apply = scanner_mod.Scanner._apply_services
+
+        def apply(self, reader, dev):  # the sim reports segmented-both; pretend it cannot segment
+            orig_apply(self, reader, dev)
+            dev.segmentation = "no-segmentation"
+
+        monkeypatch.setattr(scanner_mod.Scanner, "_apply_services", apply)
 
     scan = run_scan(*port_pair, patch=patch)
     assert calls[0] == 0 and None not in calls
     assert len(scan.devices[0].objects) == 9
+
+
+def test_diagnostics_recorded_and_persisted(port_pair, tmp_path):
+    from bacscan.core.diagnostics import diag_rows
+    from bacscan.storage.db import Store
+    scan = run_scan(*port_pair)
+    d = scan.devices[0]
+    assert d.diag["requests"] > 0 and d.diag["timeouts"] == 0
+    assert d.diag["read_mode"] == "ReadPropertyMultiple"
+    assert d.diag["object_list_mode"]
+    assert any(k == "requests" for k, _ in diag_rows(d))
+    with Store(tmp_path / "d.db") as st:
+        sid = st.save(scan)
+        assert st.load(sid).devices[0].diag == d.diag
+
+
+def test_object_list_whole_read_when_device_segments(port_pair, monkeypatch):
+    """Small max APDU but the device can send segmented replies: one whole-list request."""
+    calls = []
+
+    def patch(sc):
+        orig_build = scanner_mod.build_application
+
+        def build(cfg):
+            app, label, bind = orig_build(cfg)
+            orig_rp = app.read_property
+
+            async def rp(addr, objid, prop, index=None):
+                if str(prop) == "object-list":
+                    calls.append(index)
+                return await orig_rp(addr, objid, prop, index)
+
+            app.read_property = rp
+            return app, label, bind
+
+        monkeypatch.setattr(scanner_mod, "build_application", build)
+        orig_init = scanner_mod.DeviceReader.__init__
+
+        def init(self, *a, **k):
+            orig_init(self, *a, **k)
+            self.device.max_apdu = 50
+            self.device.segmentation = "segmented-both"
+
+        monkeypatch.setattr(scanner_mod.DeviceReader, "__init__", init)
+
+    scan = run_scan(*port_pair, patch=patch)
+    assert calls == [0, None]
+    assert scan.devices[0].diag["object_list_mode"].startswith("whole list")

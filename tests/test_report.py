@@ -91,3 +91,35 @@ def test_duplicate_instance_detected(port_pair):
     assert any(e.startswith(DUPLICATE_PREFIX) for e in d.errors)
     assert d.status == "done"  # the duplicate note alone does not make the read partial
     assert findings(scan)[0].title == "Duplicate BACnet device instance"
+
+
+def test_diff_report(tmp_path):
+    import copy
+    a = sample_scan()
+    b = copy.deepcopy(a)
+    b.id = (a.id or 1) + 1
+    removed = b.devices.pop()
+    b.devices[0].props["firmware-revision"].value = "9.9.9"
+    b.devices[0].props["firmware-revision"].text = "9.9.9"
+    html = report.build_diff_html(a, b, author="Tester")
+    assert "Change report" in html and "Tester" in html and "9.9.9" in html
+    assert f"device {removed.instance}" in html and "removed" in html
+    assert "<script>" not in html
+    same = report.build_diff_html(a, copy.deepcopy(a))
+    assert "No differences" in same
+    pdf = tmp_path / "d.pdf"
+    report.write_diff_report(a, b, pdf)
+    assert pdf.read_bytes().startswith(b"%PDF")
+    out = tmp_path / "d.html"
+    report.write_diff_report(a, b, out)
+    assert "Compared scans" in out.read_text()
+
+
+def test_diff_report_cli(tmp_path, monkeypatch, capsys):
+    db = tmp_path / "t.db"
+    with Store(db) as st:
+        a = st.save(sample_scan())
+        b = st.save(sample_scan())
+    out = tmp_path / "c.pdf"
+    assert cli_main(["--db", str(db), "scans", "diff", str(a), str(b), "-o", str(out)]) == 0
+    assert out.read_bytes().startswith(b"%PDF")

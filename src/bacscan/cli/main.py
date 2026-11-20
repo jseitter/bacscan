@@ -459,6 +459,14 @@ def cmd_scans_diff(a: argparse.Namespace) -> int:
         except KeyError as e:
             err.print(f"[red]{e.args[0]}[/red]")
             return 1
+    if a.output:
+        from ..storage import report
+        if Path(a.output).suffix.lower() not in (".pdf", ".html", ".htm"):
+            err.print("[red]error:[/red] output must end in .html or .pdf")
+            return 1
+        report.write_diff_report(sa, sb, a.output, values=a.values, author=a.author)
+        console.print(f"wrote {a.output}")
+        return 0
     d = diff_scans(sa, sb, values=a.values)
     if a.json:
         print(json.dumps(d.to_dict(), indent=2, ensure_ascii=False))
@@ -548,6 +556,17 @@ def cmd_scans_show(a: argparse.Namespace) -> int:
         console.print(o)
         if dev.errors:
             console.print("[yellow]errors:[/yellow] " + "; ".join(dev.errors))
+        from ..core.diagnostics import diag_rows, hint
+        rows = diag_rows(dev)
+        if rows:
+            dt = Table(title="Scan diagnostics", header_style="bold", show_header=False)
+            dt.add_column("", style="bold")
+            dt.add_column("", overflow="fold")
+            for k, v in rows:
+                dt.add_row(k, v)
+            console.print(dt)
+            if hint(dev):
+                console.print(f"[yellow]hint:[/yellow] {hint(dev)}")
         return 0
     if a.json:
         print(json.dumps(scan.to_dict(), indent=2, ensure_ascii=False))
@@ -792,6 +811,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("scan_b")
     sp.add_argument("--values", action="store_true", help="also compare present values / status")
     sp.add_argument("--json", action="store_true")
+    sp.add_argument("-o", "--output", help="write a change report to FILE.pdf or FILE.html instead of printing")
+    sp.add_argument("--author", default="", help="author / company line in the report header")
     sp.set_defaults(func=cmd_scans_diff)
     sp = sc.add_parser("import", help="import a JSON export")
     sp.add_argument("file")

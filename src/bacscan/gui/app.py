@@ -336,9 +336,28 @@ class CompareDialog(QDialog):
         v.addWidget(self.summary)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
+        save = buttons.addButton("Save change report…", QDialogButtonBox.ButtonRole.ActionRole)
+        save.clicked.connect(self.save_report)
         v.addWidget(buttons)
         if len(ids) >= 2:
             self.compare()
+
+    def save_report(self) -> None:
+        a, b = self.a_combo.currentData(), self.b_combo.currentData()
+        if a is None or b is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Save change report", str(Path.home() / f"changes-{a}-{b}.pdf"),
+                                              "PDF (*.pdf);;HTML (*.html)")
+        if not path:
+            return
+        from ..storage import report
+        try:
+            report.write_diff_report(self.store.load(a), self.store.load(b), path,
+                                     values=self.values_cb.isChecked())
+        except Exception as e:  # noqa: BLE001 - show, don't crash
+            QMessageBox.warning(self, "Report failed", error_text(e))
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def compare(self) -> None:
         a, b = self.a_combo.currentData(), self.b_combo.currentData()
