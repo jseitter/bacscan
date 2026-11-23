@@ -482,6 +482,32 @@ def cmd_scans_diff(a: argparse.Namespace) -> int:
     return 0 if d.empty else 3
 
 
+def cmd_help(a: argparse.Namespace) -> int:
+    from .. import help as helpmod
+
+    if not a.topic:
+        for group in ("Guide", "Object types", "Properties", "Glossary"):
+            items = [t for t in helpmod.all_topics() if t.group == group]
+            console.print(f"[bold]{group}[/bold] ({len(items)})")
+            shown = [t.id.split(":", 1)[-1] for t in items] if group != "Guide" else [t.id for t in items]
+            console.print("  " + ", ".join(shown), highlight=False)
+        console.print("\nShow one with: bacscan help <name>   e.g. bacscan help schedule, bacscan help segmentation")
+        return 0
+    name = " ".join(a.topic)
+    t = helpmod.explain(name)
+    if t:
+        print(helpmod.render_text(t))
+        return 0
+    hits = helpmod.search(name)
+    if not hits:
+        err.print(f"[red]no help for '{name}'[/red] (list everything with: bacscan help)")
+        return 1
+    console.print(f"No exact topic '{name}'. Matches:")
+    for t in hits[:15]:
+        console.print(f"  {t.group}: {t.id.split(':', 1)[-1]}", highlight=False)
+    return 1
+
+
 def cmd_read(a: argparse.Namespace) -> int:
     cfg = _config_from_args(a)
     try:
@@ -826,6 +852,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("scan_id")
     sp.set_defaults(func=cmd_scans_delete)
 
+    sp = sub.add_parser("help", help="explain object types, properties, scan levels and more")
+    sp.add_argument("topic", nargs="*", help="object type, property, glossary term or guide topic (none = list)")
+    sp.set_defaults(func=cmd_help)
     sp = sub.add_parser("gui", help="start the graphical user interface")
     sp.set_defaults(func=cmd_gui)
     return p

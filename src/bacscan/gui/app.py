@@ -580,7 +580,7 @@ class MainWindow(QMainWindow):
         self.prop_model = PropertyModel(self)
         self.prop_view = _table(self.prop_model, stretch_col=1)
         self.prop_view.setSortingEnabled(False)
-        self.prop_view.customContextMenuRequested.connect(lambda pos: self._copy_menu(self.prop_view, pos))
+        self.prop_view.customContextMenuRequested.connect(self._prop_menu)
 
         self.device_filter = QLineEdit(placeholderText="Filter devices…", clearButtonEnabled=True)
         self.device_filter.textChanged.connect(self.device_proxy.setFilterFixedString)
@@ -738,6 +738,12 @@ class MainWindow(QMainWindow):
         self.log_dock.toggleViewAction().setShortcut("Ctrl+L")
 
         h = m.addMenu("&Help")
+        self._action(h, "Help contents", lambda: self.show_help())
+        self._action(h, "Explain selected object or property", lambda: self.show_help(context=True),
+                     QKeySequence("F1"))
+        self._action(h, "BACnet object types", lambda: self.show_help("object:device"))
+        self._action(h, "Troubleshooting slow or incomplete devices", lambda: self.show_help("diagnostics"))
+        h.addSeparator()
         self._action(h, "About bacscan", self.about)
 
     def _action(self, menu: QMenu, text: str, slot, shortcut=None) -> QAction:
@@ -1004,10 +1010,48 @@ class MainWindow(QMainWindow):
         o = self._object_at(self.object_view.indexAt(pos))
         if o is not None and o.object_type == "schedule":
             menu.addAction("Show schedule…", lambda: self.show_schedule(o))
+        if o is not None:
+            from ..help import object_topic_id
+            menu.addAction(f"What is a {o.object_type}?", lambda: self.show_help(object_topic_id(o.object_type)))
             menu.addSeparator()
         self._add_copy_actions(menu, self.object_view, pos)
         if not menu.isEmpty():
             menu.exec(self.object_view.viewport().mapToGlobal(pos))
+
+    def _prop_menu(self, pos) -> None:
+        menu = QMenu(self)
+        idx = self.prop_view.indexAt(pos)
+        if idx.isValid():
+            name = str(self.prop_model.items[idx.row()][0])
+            from ..help import property_topic_id, topic
+            if not name.startswith("(") and topic(property_topic_id(name)):
+                menu.addAction(f"What is {name.split('[')[0]}?",
+                               lambda: self.show_help(property_topic_id(name)))
+                menu.addSeparator()
+        self._add_copy_actions(menu, self.prop_view, pos)
+        if not menu.isEmpty():
+            menu.exec(self.prop_view.viewport().mapToGlobal(pos))
+
+    def show_help(self, topic_id: str | None = None, context: bool = False) -> None:
+        """Open the help window. context=True picks the topic from the current selection."""
+        from ..help import object_topic_id, property_topic_id, topic
+        from .help_dialog import HelpWindow
+        if context and topic_id is None:
+            idx = self.prop_view.currentIndex()
+            name = str(self.prop_model.items[idx.row()][0]) if idx.isValid() else ""
+            o = self._object_at(self.object_view.currentIndex())
+            if name and not name.startswith("(") and topic(property_topic_id(name)) and self.prop_view.hasFocus():
+                topic_id = property_topic_id(name)
+            elif o is not None:
+                topic_id = object_topic_id(o.object_type)
+            elif self.selected_device() is not None:
+                topic_id = object_topic_id("device")
+        if getattr(self, "_help", None) is None:
+            self._help = HelpWindow(self)
+        self._help.show_topic(topic_id or "start")
+        self._help.show()
+        self._help.raise_()
+        self._help.activateWindow()
 
     def show_schedule(self, o) -> None:
         if o is None or o.object_type != "schedule":

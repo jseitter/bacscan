@@ -125,6 +125,14 @@ class ObjectModel(_ListModel):
         ("Out of service", lambda o: o.text("out-of-service")),
     ]
 
+    def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+        if role == Qt.ItemDataRole.ToolTipRole and index.isValid() and index.column() == 0:
+            from ..help.objects import OBJECT_TYPES
+            info = OBJECT_TYPES.get(self.items[index.row()].object_type)
+            if info:
+                return f"{info[0]}: {info[1]}"
+        return super().data(index, role)
+
     def extra_data(self, item: BacnetObject, column: int, role: int) -> Any:
         if role == Qt.ItemDataRole.ForegroundRole:
             if item.text("out-of-service") == "true" or item.text("status-flags"):
@@ -140,6 +148,14 @@ class PropertyModel(_ListModel):
         ("Value", lambda kv: kv[1] if isinstance(kv[1], str)
          else (kv[1].text if kv[1].error is None else f"error: {kv[1].error}")),
     ]
+
+    def data(self, index: QModelIndex, role=Qt.ItemDataRole.DisplayRole):
+        if role == Qt.ItemDataRole.ToolTipRole and index.isValid() and index.column() == 0:
+            from ..help.properties import PROPERTIES
+            text = PROPERTIES.get(self.items[index.row()][0].split("[")[0])
+            if text:
+                return text
+        return super().data(index, role)
 
     def extra_data(self, item, column: int, role: int) -> Any:
         if role == Qt.ItemDataRole.ForegroundRole and isinstance(item[1], PropValue) and item[1].error:

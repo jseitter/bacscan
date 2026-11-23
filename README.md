@@ -12,7 +12,7 @@ See [SPEC.md](SPEC.md) for the full specification.
 ./scripts/build_pkg.sh --rebuild   # -> dist/bacscan-<version>.pkg (+ dist/bacscan.app and a .dmg)
 ```
 
-Double-click the `.pkg` (or `sudo installer -pkg dist/bacscan-0.1.3.pkg -target /`). It installs
+Double-click the `.pkg` (or `sudo installer -pkg dist/bacscan-0.1.4.pkg -target /`). It installs
 `bacscan.app` into `/Applications` and the command `bacscan` into `/usr/local/bin`, so both work:
 
 ```sh
@@ -52,7 +52,7 @@ Each release:
 export BACSCAN_APP_IDENTITY="Developer ID Application: <name> (<TEAM>)"
 export BACSCAN_INSTALLER_IDENTITY="Developer ID Installer: <name> (<TEAM>)"
 ./scripts/build_pkg.sh --rebuild          # signs app, .dmg and .pkg
-./scripts/notarize.sh dist/bacscan-0.1.3.pkg dist/bacscan-0.1.0.dmg
+./scripts/notarize.sh dist/bacscan-0.1.4.pkg dist/bacscan-0.1.0.dmg
 ```
 
 The app is signed with the hardened runtime and `packaging/entitlements.plist` (needed by the
@@ -79,6 +79,19 @@ device to see its objects, select an object to see all its properties. Every sca
 listed on the left (double-click to edit site/notes, right-click to export or delete).
 Right-click a device to re-scan just that device. *Scan → Settings* holds timeouts and
 parallelism; *View → Log* shows what happens on the wire.
+
+## Help
+
+*Help* menu in the GUI (**F1** explains the selected object type or property; hover a type or
+property name for a tooltip; right-click → *What is …?*). It holds a short guide (scan levels,
+reading results, troubleshooting, reports), all 63 standard BACnet object types, about 90
+properties and a glossary, with search. The same text is on the command line:
+
+```sh
+uv run bacscan help                   # list everything
+uv run bacscan help analog-output     # object type, property, glossary term or guide topic
+uv run bacscan help segmentation
+```
 
 ## Network environment
 
@@ -213,8 +226,8 @@ Useful scan options:
 | `-l discover\|device\|full\|all` | how deep to read (default `full`) |
 | `-t 10` | wait longer for answers on slow networks |
 | `-r 1000-1999` | only device instances in this range |
-| `--target 10.1.3.0/24` | unicast Who-Is when broadcasts are blocked |
-| `--bbmd 10.1.3.1` | register at a BBMD to reach other subnets |
+| `--target 10.1.4.0/24` | unicast Who-Is when broadcasts are blocked |
+| `--bbmd 10.1.4.1` | register at a BBMD to reach other subnets |
 | `-o scan.json` | also export the result directly |
 
 Ctrl+C during a scan stops it and keeps (and saves) everything read so far.
