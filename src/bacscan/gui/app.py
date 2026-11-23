@@ -574,8 +574,8 @@ class MainWindow(QMainWindow):
         self.object_view = _table(self.object_proxy, stretch_col=-1)
         self.object_view.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         self.object_view.selectionModel().currentRowChanged.connect(self._object_selected)
-        self.object_view.customContextMenuRequested.connect(
-            lambda pos: self._copy_menu(self.object_view, pos))
+        self.object_view.customContextMenuRequested.connect(self._object_menu)
+        self.object_view.doubleClicked.connect(lambda idx: self.show_schedule(self._object_at(idx)))
 
         self.prop_model = PropertyModel(self)
         self.prop_view = _table(self.prop_model, stretch_col=1)
@@ -993,6 +993,29 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         self._add_copy_actions(menu, self.device_view, pos)
         menu.exec(self.device_view.viewport().mapToGlobal(pos))
+
+    def _object_at(self, idx):
+        if not idx.isValid():
+            return None
+        return self.object_model.items[self.object_proxy.mapToSource(idx).row()]
+
+    def _object_menu(self, pos) -> None:
+        menu = QMenu(self)
+        o = self._object_at(self.object_view.indexAt(pos))
+        if o is not None and o.object_type == "schedule":
+            menu.addAction("Show schedule…", lambda: self.show_schedule(o))
+            menu.addSeparator()
+        self._add_copy_actions(menu, self.object_view, pos)
+        if not menu.isEmpty():
+            menu.exec(self.object_view.viewport().mapToGlobal(pos))
+
+    def show_schedule(self, o) -> None:
+        if o is None or o.object_type != "schedule":
+            return
+        d = self.selected_device()
+        from ..core.schedules import parse_schedule
+        from .schedule_dialog import ScheduleDialog
+        ScheduleDialog(parse_schedule(o, d), f"device {d.instance} {d.name}" if d else "", self).exec()
 
     def _copy_menu(self, view: QTableView, pos) -> None:
         menu = QMenu(self)

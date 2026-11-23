@@ -83,7 +83,7 @@ TYPE_PROPS = {k: _props(*v) for k, v in _TYPE_PROPS.items()}
 
 # Properties that are arrays too big for one APDU (we do not accept segmented replies, and one oversized
 # property would make the device abort a whole ReadPropertyMultiple). They are read element by element.
-ARRAY_PROPS = {"schedule": _props("weekly-schedule")}
+ARRAY_PROPS = {"schedule": _props("weekly-schedule", "exception-schedule", "list-of-object-property-references")}
 DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
@@ -447,7 +447,7 @@ class DeviceReader:
                 items.append(pv.value)
         if failed and len(failed) == count:
             return PropValue(error="; ".join(failed[:3]))
-        text = weekly_text(items) if prop == "weekly-schedule" else "; ".join(str(x) for x in items)
+        text = weekly_text(items) if prop == "weekly-schedule" else "; ".join(str(x) for x in items if x is not None)
         if failed:
             text += f"  (unreadable: {', '.join(failed[:3])})"
         return PropValue(value=items, text=text)

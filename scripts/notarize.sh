@@ -1,5 +1,5 @@
 #!/bin/sh
-# Notarize and staple signed release files, e.g.: scripts/notarize.sh dist/bacscan-0.1.2.pkg dist/bacscan-0.1.0.dmg
+# Notarize and staple signed release files, e.g.: scripts/notarize.sh dist/bacscan-0.1.3.pkg dist/bacscan-0.1.0.dmg
 # One-time setup (app-specific password from account.apple.com):
 #   xcrun notarytool store-credentials bacscan --apple-id <apple id> --team-id <TEAM>
 set -eu

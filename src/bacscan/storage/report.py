@@ -195,6 +195,34 @@ def build_html(scan: Scan, objects: bool = False, author: str = "") -> str:
     else:
         p.append("<p>No BACnet devices found.</p>")
 
+    # schedules
+    from ..core.schedules import DAY_NAMES, scan_schedules
+    schedules = [(d, v) for d, v in scan_schedules(scan) if v.has_weekly or v.exceptions or v.controls]
+    if schedules:
+        p.append("<h2>Schedules</h2>")
+        for d, sv in schedules:
+            p.append(f"<h3>{_e(d.instance)} {_e(d.name)} · {_e(sv.key)} {_e(sv.name)}</h3>")
+            meta = [x for x in (sv.description, f"now: {sv.present_value}" if sv.present_value else "",
+                                f"default: {sv.default}" if sv.default else "",
+                                f"effective: {sv.effective}" if sv.effective else "") if x]
+            if meta:
+                p.append(f'<p class="small muted">{_e(" · ".join(meta))}</p>')
+            if sv.has_weekly:
+                n = max(len(x) for x in sv.days if x is not None) or 1
+                rows = []
+                for r in range(n):
+                    rows.append([f"{x[r][0]} → {x[r][1]}" if x is not None and r < len(x)
+                                 else ("?" if x is None and r == 0 else "") for x in sv.days])
+                p.append(_table(list(DAY_NAMES), rows, widths=[14] * 6 + [16], small=True))
+            if sv.exceptions:
+                p.append(_table(["Exception", "Priority", "Times"],
+                                [[e.period, "" if e.priority is None else e.priority,
+                                  ", ".join(f"{t} → {val}" for t, val in e.entries)] for e in sv.exceptions],
+                                widths=[34, 10, 56], small=True))
+            if sv.controls:
+                p.append(f'<p class="small">Controls: {_e("; ".join(sv.controls[:20]))}'
+                         + (f" … and {len(sv.controls) - 20} more" if len(sv.controls) > 20 else "") + "</p>")
+
     # hosts
     if scan.hosts:
         names = {d.instance: d.name for d in scan.devices}

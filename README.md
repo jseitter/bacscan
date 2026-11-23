@@ -12,7 +12,7 @@ See [SPEC.md](SPEC.md) for the full specification.
 ./scripts/build_pkg.sh --rebuild   # -> dist/bacscan-<version>.pkg (+ dist/bacscan.app and a .dmg)
 ```
 
-Double-click the `.pkg` (or `sudo installer -pkg dist/bacscan-0.1.2.pkg -target /`). It installs
+Double-click the `.pkg` (or `sudo installer -pkg dist/bacscan-0.1.3.pkg -target /`). It installs
 `bacscan.app` into `/Applications` and the command `bacscan` into `/usr/local/bin`, so both work:
 
 ```sh
@@ -52,7 +52,7 @@ Each release:
 export BACSCAN_APP_IDENTITY="Developer ID Application: <name> (<TEAM>)"
 export BACSCAN_INSTALLER_IDENTITY="Developer ID Installer: <name> (<TEAM>)"
 ./scripts/build_pkg.sh --rebuild          # signs app, .dmg and .pkg
-./scripts/notarize.sh dist/bacscan-0.1.2.pkg dist/bacscan-0.1.0.dmg
+./scripts/notarize.sh dist/bacscan-0.1.3.pkg dist/bacscan-0.1.0.dmg
 ```
 
 The app is signed with the hardened runtime and `packaging/entitlements.plist` (needed by the
@@ -213,8 +213,8 @@ Useful scan options:
 | `-l discover\|device\|full\|all` | how deep to read (default `full`) |
 | `-t 10` | wait longer for answers on slow networks |
 | `-r 1000-1999` | only device instances in this range |
-| `--target 10.1.2.0/24` | unicast Who-Is when broadcasts are blocked |
-| `--bbmd 10.1.2.1` | register at a BBMD to reach other subnets |
+| `--target 10.1.3.0/24` | unicast Who-Is when broadcasts are blocked |
+| `--bbmd 10.1.3.1` | register at a BBMD to reach other subnets |
 | `-o scan.json` | also export the result directly |
 
 Ctrl+C during a scan stops it and keeps (and saves) everything read so far.
